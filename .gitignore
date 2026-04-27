@@ -1,0 +1,24 @@
+# Dependencias
+node_modules/
+.pnp
+.pnp.js
+
+# Build
+.next/
+out/
+dist/
+
+# Variables de entorno — NUNCA subir al repo
+.env.local
+.env.*.local
+.env
+
+# Solo el .env.example se sube (sin valores reales)
+
+# Miscelánea
+.DS_Store
+*.pem
+.vercel
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
