@@ -5,10 +5,11 @@ import TopBar from '@/components/layout/TopBar'
 import { Save, CheckCircle, AlertCircle, Zap, XCircle } from 'lucide-react'
 
 const SERVICE_LABELS: Record<string, { label: string; description: string }> = {
-  openai:  { label: 'OpenAI (GPT-4)',  description: 'Enriquecimiento IA y generación de mensajes' },
-  resend:  { label: 'Resend',          description: 'Envío de emails de outreach' },
+  gemini:  { label: 'Google Gemini',   description: 'Enriquecimiento IA y generación de mensajes' },
+  resend:  { label: 'Resend',          description: 'Envío de emails y tracking de aperturas' },
   serpapi: { label: 'SerpAPI',         description: 'Búsqueda de leads en Google' },
   hunter:  { label: 'Hunter.io',       description: 'Búsqueda de emails por dominio' },
+  apollo:  { label: 'Apollo.io',       description: 'Búsqueda de contactos por cargo y sector' },
 }
 
 export default function SettingsPage() {
@@ -17,7 +18,7 @@ export default function SettingsPage() {
     email_from_name: 'Media Connector',
     email_signature: '',
     email_daily_limit: 50,
-    ai_model: 'gpt-4o-mini',
+    ai_model: 'gemini-2.0-flash',
     default_language: 'es',
     default_tone: 'consultivo',
     scraping_provider: 'serpapi',
@@ -35,8 +36,8 @@ export default function SettingsPage() {
     ]).then(([settingsJson, statusJson]) => {
       if (settingsJson.data?.settings) setSettings(s => ({ ...s, ...settingsJson.data.settings }))
       if (statusJson.data) {
-        const { openai, resend, serpapi, hunter, resend_from } = statusJson.data
-        setServiceStatus({ openai, resend, serpapi, hunter })
+        const { gemini, resend, serpapi, hunter, apollo, resend_from } = statusJson.data
+        setServiceStatus({ gemini, resend, serpapi, hunter, apollo })
         setResendFrom(resend_from)
       }
       setLoading(false)
@@ -170,14 +171,14 @@ export default function SettingsPage() {
           <h2 className="text-sm font-semibold text-gray-900 mb-4 mt-6">Inteligencia Artificial</h2>
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="label">Modelo OpenAI</label>
+              <label className="label">Modelo Gemini</label>
               <select
                 className="input"
                 value={settings.ai_model}
                 onChange={e => setSettings(s => ({ ...s, ai_model: e.target.value }))}>
-                <option value="gpt-4o-mini">GPT-4o Mini (recomendado)</option>
-                <option value="gpt-4o">GPT-4o (mejor calidad)</option>
-                <option value="gpt-3.5-turbo">GPT-3.5 Turbo (económico)</option>
+                <option value="gemini-2.0-flash">Gemini 2.0 Flash (recomendado)</option>
+                <option value="gemini-2.0-flash-lite">Gemini 2.0 Flash Lite (económico)</option>
+                <option value="gemini-1.5-pro">Gemini 1.5 Pro (mayor calidad)</option>
               </select>
             </div>
             <div>

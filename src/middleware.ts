@@ -1,7 +1,34 @@
 import { createServerClient } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
 
+const ACCESS_COOKIE = 'mmc_access'
+const ACCESS_PASSWORD = process.env.SITE_ACCESS_PASSWORD ?? 'malvavisco'
+
 export async function middleware(request: NextRequest) {
+  const pathname = request.nextUrl.pathname
+
+  // Rutas que nunca necesitan comprobación (estáticos, api interna)
+  const isStatic = pathname.startsWith('/_next') || pathname.startsWith('/api/access')
+  if (isStatic) return NextResponse.next()
+
+  // ── 1. PUERTA DE ACCESO ──────────────────────────────────────────────────
+  const accessCookie = request.cookies.get(ACCESS_COOKIE)?.value
+  const hasAccess = accessCookie === ACCESS_PASSWORD
+
+  if (!hasAccess && pathname !== '/access') {
+    const url = request.nextUrl.clone()
+    url.pathname = '/access'
+    return NextResponse.redirect(url)
+  }
+
+  // Si ya tiene acceso pero está en /access → mandarlo al login
+  if (hasAccess && pathname === '/access') {
+    const url = request.nextUrl.clone()
+    url.pathname = '/login'
+    return NextResponse.redirect(url)
+  }
+
+  // ── 2. AUTH SUPABASE (igual que antes) ───────────────────────────────────
   let supabaseResponse = NextResponse.next({ request })
 
   const supabase = createServerClient(
@@ -9,13 +36,9 @@ export async function middleware(request: NextRequest) {
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
       cookies: {
-        getAll() {
-          return request.cookies.getAll()
-        },
+        getAll() { return request.cookies.getAll() },
         setAll(cookiesToSet: { name: string; value: string; options?: Record<string, unknown> }[]) {
-          cookiesToSet.forEach(({ name, value }) =>
-            request.cookies.set(name, value)
-          )
+          cookiesToSet.forEach(({ name, value }) => request.cookies.set(name, value))
           supabaseResponse = NextResponse.next({ request })
           cookiesToSet.forEach(({ name, value, options }) =>
             supabaseResponse.cookies.set(name, value, options as Parameters<typeof supabaseResponse.cookies.set>[2])
@@ -27,20 +50,18 @@ export async function middleware(request: NextRequest) {
 
   const { data: { user } } = await supabase.auth.getUser()
 
-  const pathname = request.nextUrl.pathname
   const isAuthPage = pathname.startsWith('/login') ||
     pathname.startsWith('/register') ||
-    pathname.startsWith('/forgot-password')
+    pathname.startsWith('/forgot-password') ||
+    pathname.startsWith('/access')
   const isPublicApi = pathname.startsWith('/api/auth')
 
-  // Si no hay usuario y no está en página auth → redirigir a login
-  if (!user && !isAuthPage && !isPublicApi && !pathname.startsWith('/_next')) {
+  if (!user && !isAuthPage && !isPublicApi) {
     const url = request.nextUrl.clone()
     url.pathname = '/login'
     return NextResponse.redirect(url)
   }
 
-  // Si hay usuario y está en página auth → redirigir al dashboard
   if (user && isAuthPage) {
     const url = request.nextUrl.clone()
     url.pathname = '/dashboard'

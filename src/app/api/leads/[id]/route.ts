@@ -23,7 +23,6 @@ export async function GET(_req: Request, { params }: Params) {
     `)
     .eq('id', id)
     .eq('user_id', user.id)
-    .order('created_at', { referencedTable: 'activity_logs', ascending: false })
     .single()
 
   if (error) return NextResponse.json({ error: 'Lead no encontrado' }, { status: 404 })

@@ -6,7 +6,7 @@ import { cn } from '@/lib/utils'
 import Image from 'next/image'
 import {
   LayoutDashboard, Megaphone, Users, Upload, Settings,
-  ChevronLeft, ChevronRight, LogOut
+  ChevronLeft, ChevronRight, LogOut, Telescope, Kanban, UserSearch, Mails
 } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
 import { useRouter } from 'next/navigation'
@@ -14,8 +14,11 @@ import { useState } from 'react'
 
 const navItems = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
+  { href: '/pipeline', label: 'Pipeline', icon: Kanban },
   { href: '/campaigns', label: 'Campañas', icon: Megaphone },
   { href: '/leads', label: 'CRM / Leads', icon: Users },
+  { href: '/discover', label: 'Buscar por email', icon: Telescope },
+  { href: '/apollo', label: 'Apollo — Contactos', icon: UserSearch },
   { href: '/imports', label: 'Importar CSV', icon: Upload },
   { href: '/settings', label: 'Configuración', icon: Settings },
 ]

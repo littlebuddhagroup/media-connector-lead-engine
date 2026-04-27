@@ -3,6 +3,7 @@
 import { useState, useCallback, useEffect } from 'react'
 import TopBar from '@/components/layout/TopBar'
 import { Upload, FileText, AlertCircle, CheckCircle, X, ArrowRight } from 'lucide-react'
+import { toast } from '@/components/ui/Toast'
 import Papa from 'papaparse'
 import type { Campaign } from '@/types'
 
@@ -37,7 +38,7 @@ export default function ImportsPage() {
   }, [])
 
   const handleFile = (file: File) => {
-    if (!file.name.endsWith('.csv')) { alert('Solo se aceptan archivos CSV'); return }
+    if (!file.name.endsWith('.csv')) { toast.warning('Formato no válido', 'Solo se aceptan archivos CSV.'); return }
     setFileName(file.name)
     Papa.parse(file, {
       header: true,
@@ -90,7 +91,7 @@ export default function ImportsPage() {
       setResult(json.data)
       setStep('result')
     } else {
-      alert(json.error)
+      toast.error('Error al importar', json.error || 'Inténtalo de nuevo.')
     }
   }
 

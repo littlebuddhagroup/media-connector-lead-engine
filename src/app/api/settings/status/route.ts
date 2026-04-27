@@ -9,10 +9,11 @@ export async function GET() {
 
   return NextResponse.json({
     data: {
-      openai: Boolean(process.env.OPENAI_API_KEY),
+      gemini: Boolean(process.env.GEMINI_API_KEY),
       resend: Boolean(process.env.RESEND_API_KEY),
       serpapi: Boolean(process.env.SERPAPI_API_KEY),
       hunter: Boolean(process.env.HUNTER_API_KEY),
+      apollo: Boolean(process.env.APOLLO_API_KEY),
       resend_from: process.env.RESEND_FROM_EMAIL ?? '',
     }
   })

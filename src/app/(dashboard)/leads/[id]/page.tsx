@@ -1,17 +1,19 @@
 'use client'
 
-import { useState, useEffect, use } from 'react'
+import { useState, useEffect } from 'react'
 import TopBar from '@/components/layout/TopBar'
 import Link from 'next/link'
 import {
   ArrowLeft, Globe, Mail, Phone, Linkedin, Zap, MessageSquare,
-  Send, StickyNote, CheckSquare, Activity, Star, Edit2, ExternalLink
+  Send, StickyNote, CheckSquare, Activity, Star, Edit2, ExternalLink, Trash2,
+  Mails, Play, Pause, CheckCircle2, Clock, Loader2
 } from 'lucide-react'
 import {
   statusLabel, statusColor, priorityColor, scoreToBg,
   formatDate, formatDateRelative
 } from '@/lib/utils'
 import Modal from '@/components/ui/Modal'
+import { toast } from '@/components/ui/Toast'
 
 const STATUSES = [
   'new','enriched','pending_review','approved','contacted',
@@ -34,17 +36,19 @@ const TONES = [
   { value: 'directo', label: 'Directo' },
 ]
 
-export default function LeadDetailPage({ params }: { params: Promise<{ id: string }> }) {
-  const { id } = use(params)
+export default function LeadDetailPage({ params }: { params: { id: string } }) {
+  const { id } = params
   const [lead, setLead] = useState<Record<string, unknown> | null>(null)
   const [loading, setLoading] = useState(true)
   const [enriching, setEnriching] = useState(false)
-  const [activeTab, setActiveTab] = useState<'info'|'messages'|'emails'|'notes'|'tasks'|'activity'>('info')
+  const [activeTab, setActiveTab] = useState<'info'|'messages'|'emails'|'notes'|'tasks'|'activity'|'sequences'>('info')
 
   // Modals
   const [showMessageModal, setShowMessageModal] = useState(false)
   const [showNoteModal, setShowNoteModal] = useState(false)
   const [showSendEmailModal, setShowSendEmailModal] = useState(false)
+  const [showDeleteModal, setShowDeleteModal] = useState(false)
+  const [deleting, setDeleting] = useState(false)
 
   // Generate message form
   const [msgType, setMsgType] = useState('initial_email')
@@ -61,6 +65,11 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
   const [emailBody, setEmailBody] = useState('')
   const [sendingEmail, setSendingEmail] = useState(false)
 
+  // Sequences
+  const [sequences, setSequences] = useState<Record<string, unknown>[]>([])
+  const [launchingSequence, setLaunchingSequence] = useState(false)
+  const [showSequenceModal, setShowSequenceModal] = useState(false)
+
   const fetchLead = async () => {
     const res = await fetch(`/api/leads/${id}`)
     const json = await res.json()
@@ -68,16 +77,36 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
     setLoading(false)
   }
 
-  useEffect(() => { fetchLead() }, [id])
+  const fetchSequences = async () => {
+    const res = await fetch(`/api/sequences?lead_id=${id}`)
+    const json = await res.json()
+    setSequences(json.data ?? [])
+  }
+
+  useEffect(() => { fetchLead(); fetchSequences() }, [id])
 
   const handleEnrich = async () => {
     setEnriching(true)
     const res = await fetch(`/api/leads/${id}/enrich`, { method: 'POST' })
     setEnriching(false)
-    if (res.ok) fetchLead()
-    else {
+    if (res.ok) {
+      fetchLead()
+      toast.success('Lead enriquecido', 'El análisis IA se ha completado correctamente.')
+    } else {
       const json = await res.json()
-      alert(json.error)
+      toast.aiError(json.error ?? 'Error desconocido')
+    }
+  }
+
+  const handleDelete = async () => {
+    setDeleting(true)
+    const res = await fetch(`/api/leads/${id}`, { method: 'DELETE' })
+    setDeleting(false)
+    if (res.ok) {
+      window.location.href = '/leads'
+    } else {
+      const json = await res.json()
+      toast.error('Error al eliminar', json.error || 'Inténtalo de nuevo.')
     }
   }
 
@@ -105,16 +134,13 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
       fetchLead()
     } else {
       const json = await res.json()
-      alert(json.error)
+      toast.aiError(json.error ?? 'Error generando mensaje')
     }
   }
 
   const handleSaveNote = async () => {
     if (!noteContent.trim()) return
     setSavingNote(true)
-    const supabase = await import('@/lib/supabase/client').then(m => m.createClient())
-    const { data: { user } } = await supabase.auth.getUser()
-    const res = await fetch('/api/leads/' + id, { method: 'GET' }) // just to get lead
     await fetch('/api/notes', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -146,10 +172,42 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
       setEmailSubject('')
       setEmailBody('')
       fetchLead()
+      toast.success('Email enviado', 'El email ha sido enviado correctamente.')
     } else {
       const json = await res.json()
-      alert(json.error)
+      toast.error('Error al enviar email', json.error ?? 'Inténtalo de nuevo.')
     }
+  }
+
+  const handleLaunchSequence = async () => {
+    setLaunchingSequence(true)
+    const res = await fetch('/api/sequences', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        lead_id: id,
+        campaign_id: (lead as Record<string, string>)?.campaign_id ?? null,
+      }),
+    })
+    setLaunchingSequence(false)
+    if (res.ok) {
+      setShowSequenceModal(false)
+      fetchSequences()
+      fetchLead()
+      toast.success('Secuencia iniciada', 'Los 3 emails han sido programados correctamente.')
+    } else {
+      const json = await res.json()
+      toast.aiError(json.error ?? 'Error al iniciar secuencia')
+    }
+  }
+
+  const handleSequenceAction = async (sequenceId: string, action: string) => {
+    await fetch('/api/sequences', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sequence_id: sequenceId, action }),
+    })
+    fetchSequences()
   }
 
   if (loading) {
@@ -163,12 +221,14 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
   const emails = (lead.emails as unknown[]) ?? []
   const notes = (lead.notes as unknown[]) ?? []
   const tasks = (lead.tasks as unknown[]) ?? []
-  const activities = (lead.activity_logs as unknown[]) ?? []
+  const activities = ((lead.activity_logs as unknown[]) ?? [])
+    .sort((a, b) => new Date((b as Record<string,string>).created_at).getTime() - new Date((a as Record<string,string>).created_at).getTime())
 
   const tabs = [
     { id: 'info', label: 'Análisis IA', count: enrichment ? 1 : 0 },
     { id: 'messages', label: 'Mensajes', count: messages.length },
     { id: 'emails', label: 'Emails', count: emails.length },
+    { id: 'sequences', label: 'Secuencias', count: sequences.length },
     { id: 'notes', label: 'Notas', count: notes.length },
     { id: 'tasks', label: 'Tareas', count: tasks.length },
     { id: 'activity', label: 'Actividad', count: activities.length },
@@ -184,6 +244,12 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
             <Link href="/leads" className="btn-secondary text-xs py-1.5">
               <ArrowLeft className="w-3.5 h-3.5" /> Leads
             </Link>
+            <button
+              onClick={() => setShowDeleteModal(true)}
+              className="text-xs py-1.5 px-3 rounded-lg border border-red-200 text-red-600 hover:bg-red-50 transition-colors flex items-center gap-1.5"
+            >
+              <Trash2 className="w-3.5 h-3.5" /> Eliminar
+            </button>
             <button
               onClick={handleEnrich}
               disabled={enriching}
@@ -292,6 +358,14 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
                 className="btn-secondary w-full justify-start text-xs">
                 <StickyNote className="w-4 h-4" /> Añadir nota
               </button>
+              {(lead as Record<string, string>).email && !(sequences as { status: string }[]).some(s => s.status === 'active') && (
+                <button
+                  onClick={() => setShowSequenceModal(true)}
+                  className="btn-primary w-full justify-start text-xs"
+                >
+                  <Mails className="w-4 h-4" /> Iniciar secuencia 3 toques
+                </button>
+              )}
             </div>
           </div>
 
@@ -481,6 +555,106 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
                   </div>
                 )}
 
+                {/* TAB: Secuencias */}
+                {activeTab === 'sequences' && (
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between">
+                      <p className="text-sm text-gray-600">{sequences.length} secuencia{sequences.length !== 1 ? 's' : ''}</p>
+                      {!(sequences as { status: string }[]).some(s => s.status === 'active') && (
+                        <button
+                          onClick={() => setShowSequenceModal(true)}
+                          className="btn-primary text-xs py-1.5"
+                          disabled={!(lead as Record<string, string>).email}
+                        >
+                          <Mails className="w-3.5 h-3.5" /> Iniciar secuencia 3 toques
+                        </button>
+                      )}
+                    </div>
+                    {!(lead as Record<string, string>).email && (
+                      <p className="text-xs text-amber-600 bg-amber-50 p-3 rounded-lg">
+                        ⚠ Este lead no tiene email. Añade uno para poder enviar secuencias.
+                      </p>
+                    )}
+                    {sequences.length === 0 && (
+                      <div className="text-center py-8">
+                        <Mails className="w-8 h-8 text-gray-300 mx-auto mb-3" />
+                        <p className="text-sm text-gray-500 mb-2">Sin secuencias activas</p>
+                        <p className="text-xs text-gray-400">Una secuencia envía 3 emails automáticos: día 1, día 5 y día 10</p>
+                      </div>
+                    )}
+                    {(sequences as {
+                      id: string; name: string; status: string; current_step: number;
+                      created_at: string; sequence_steps?: { step_number: number; status: string; subject: string; scheduled_for?: string; sent_at?: string }[]
+                    }[]).map(seq => (
+                      <div key={seq.id} className="border border-gray-200 rounded-xl p-4">
+                        <div className="flex items-center justify-between mb-3">
+                          <div>
+                            <p className="text-sm font-medium text-gray-900">{seq.name}</p>
+                            <p className="text-xs text-gray-400">{formatDate(seq.created_at)}</p>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span className={`badge ${
+                              seq.status === 'active' ? 'bg-green-100 text-green-700' :
+                              seq.status === 'completed' ? 'bg-blue-100 text-blue-700' :
+                              seq.status === 'paused' ? 'bg-amber-100 text-amber-700' :
+                              'bg-gray-100 text-gray-500'
+                            }`}>
+                              {seq.status === 'active' ? '● Activa' :
+                               seq.status === 'completed' ? '✓ Completada' :
+                               seq.status === 'paused' ? '⏸ Pausada' : seq.status}
+                            </span>
+                            {seq.status === 'active' && (
+                              <button onClick={() => handleSequenceAction(seq.id, 'pause')}
+                                className="btn-secondary text-xs py-1 px-2">
+                                <Pause className="w-3 h-3" />
+                              </button>
+                            )}
+                            {seq.status === 'paused' && (
+                              <button onClick={() => handleSequenceAction(seq.id, 'resume')}
+                                className="btn-secondary text-xs py-1 px-2">
+                                <Play className="w-3 h-3" />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                        {/* Pasos */}
+                        <div className="space-y-2">
+                          {(seq.sequence_steps ?? [])
+                            .sort((a, b) => a.step_number - b.step_number)
+                            .map(step => (
+                              <div key={step.step_number} className={`flex items-center gap-3 p-2.5 rounded-lg ${
+                                step.status === 'sent' ? 'bg-green-50' :
+                                step.status === 'skipped' ? 'bg-gray-50 opacity-60' :
+                                'bg-brand-50'
+                              }`}>
+                                <div className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 text-xs font-bold ${
+                                  step.status === 'sent' ? 'bg-green-500 text-white' :
+                                  step.status === 'skipped' ? 'bg-gray-300 text-white' :
+                                  'bg-brand-200 text-brand-700'
+                                }`}>
+                                  {step.status === 'sent' ? '✓' : step.step_number}
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-xs font-medium text-gray-800 truncate">{step.subject}</p>
+                                  <p className="text-xs text-gray-400">
+                                    {step.status === 'sent' && step.sent_at ? `Enviado ${formatDateRelative(step.sent_at)}` :
+                                     step.status === 'skipped' ? 'Omitido' :
+                                     step.scheduled_for ? `Programado: ${formatDate(step.scheduled_for)}` : 'Pendiente'}
+                                  </p>
+                                </div>
+                                {step.status === 'sent' ? (
+                                  <CheckCircle2 className="w-4 h-4 text-green-500 shrink-0" />
+                                ) : step.status === 'pending' ? (
+                                  <Clock className="w-4 h-4 text-brand-400 shrink-0" />
+                                ) : null}
+                              </div>
+                            ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
                 {/* TAB: Actividad */}
                 {activeTab === 'activity' && (
                   <div className="space-y-0">
@@ -588,6 +762,27 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
         </div>
       </Modal>
 
+      {/* Modal: Confirmar borrado */}
+      <Modal isOpen={showDeleteModal} onClose={() => setShowDeleteModal(false)} title="Eliminar lead">
+        <div className="space-y-4">
+          <p className="text-sm text-gray-600">
+            ¿Seguro que quieres eliminar <span className="font-semibold text-gray-900">{lead.company_name as string}</span>?
+            Esta acción no se puede deshacer y se borrarán todos sus datos, mensajes y actividad.
+          </p>
+          <div className="flex gap-2 justify-end">
+            <button onClick={() => setShowDeleteModal(false)} className="btn-secondary text-xs">Cancelar</button>
+            <button
+              onClick={handleDelete}
+              disabled={deleting}
+              className="text-xs px-4 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white font-medium transition-colors disabled:opacity-50"
+            >
+              <Trash2 className="w-3.5 h-3.5 inline mr-1" />
+              {deleting ? 'Eliminando...' : 'Sí, eliminar'}
+            </button>
+          </div>
+        </div>
+      </Modal>
+
       {/* Modal: Enviar email */}
       <Modal isOpen={showSendEmailModal} onClose={() => setShowSendEmailModal(false)} title="Enviar email" size="lg">
         <div className="space-y-4">
@@ -616,6 +811,40 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
               className="btn-primary text-xs"
             >
               <Send className="w-3.5 h-3.5" /> {sendingEmail ? 'Enviando...' : 'Enviar email'}
+            </button>
+          </div>
+        </div>
+      </Modal>
+      {/* Modal: Iniciar secuencia */}
+      <Modal isOpen={showSequenceModal} onClose={() => setShowSequenceModal(false)} title="Iniciar secuencia 3 toques">
+        <div className="space-y-4">
+          <div className="p-4 bg-brand-50 border border-brand-100 rounded-xl text-sm text-brand-800 space-y-2">
+            <p className="font-medium">¿Cómo funciona la secuencia?</p>
+            <ul className="text-xs space-y-1 text-brand-700">
+              <li>📧 <strong>Día 1</strong> — Email inicial personalizado con IA</li>
+              <li>📧 <strong>Día 5</strong> — Follow-up si no ha contestado</li>
+              <li>📧 <strong>Día 10</strong> — Último intento de contacto</li>
+            </ul>
+            <p className="text-xs text-brand-600 mt-2">
+              Los emails se generan ahora con IA y se envían automáticamente cada día a las 9:00.
+              Si el lead contesta, la secuencia se pausa automáticamente.
+            </p>
+          </div>
+          <div className="p-3 bg-gray-50 rounded-lg text-xs text-gray-600">
+            <strong>Destinatario:</strong> {(lead as Record<string, string>).email}
+          </div>
+          <div className="flex gap-2 justify-end">
+            <button onClick={() => setShowSequenceModal(false)} className="btn-secondary text-xs">Cancelar</button>
+            <button
+              onClick={handleLaunchSequence}
+              disabled={launchingSequence}
+              className="btn-primary text-xs"
+            >
+              {launchingSequence ? (
+                <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Generando emails...</>
+              ) : (
+                <><Mails className="w-3.5 h-3.5" /> Iniciar secuencia</>
+              )}
             </button>
           </div>
         </div>

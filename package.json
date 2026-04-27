@@ -17,6 +17,7 @@
     "date-fns": "^4.1.0",
     "lucide-react": "^0.460.0",
     "next": "14.2.18",
+    "@google/genai": "^1.0.1",
     "openai": "^4.67.3",
     "papaparse": "^5.4.1",
     "react": "^18.3.1",
