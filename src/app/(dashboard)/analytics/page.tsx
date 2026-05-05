@@ -438,7 +438,7 @@ export default function AnalyticsPage() {
         }
       />
 
-      <div className="p-6 space-y-6">
+      <div className="p-3 md:p-6 space-y-4 md:space-y-6">
         {loading && !summary ? (
           <div className="card p-10 text-center">
             <Loader2 className="w-8 h-8 animate-spin text-brand-500 mx-auto mb-3" />

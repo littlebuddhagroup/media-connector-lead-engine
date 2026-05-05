@@ -698,8 +698,8 @@ export default function LeadDetailPage({ params }: { params: { id: string } }) {
         }
       />
 
-      <div className="p-6 space-y-6">
-        <div className="grid lg:grid-cols-3 gap-6">
+      <div className="p-3 md:p-6 space-y-4 md:space-y-6">
+        <div className="grid lg:grid-cols-3 gap-3 md:gap-6">
           {/* Panel izquierdo: datos del lead */}
           <div className="lg:col-span-1 space-y-4">
             <div className="card p-5">

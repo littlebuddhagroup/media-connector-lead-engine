@@ -544,7 +544,7 @@ export default function NewslettersPage() {
             </button>
           }
         />
-        <div className="p-6 space-y-4">
+        <div className="p-3 md:p-6 space-y-3 md:space-y-4">
           {unsubscribes.length === 0 ? (
             <div className="card p-12 text-center space-y-3">
               <div className="w-14 h-14 bg-green-50 rounded-2xl flex items-center justify-center mx-auto">
@@ -641,7 +641,7 @@ export default function NewslettersPage() {
         }
       />
 
-      <div className="p-6 space-y-6">
+      <div className="p-3 md:p-6 space-y-4 md:space-y-6">
         {loading ? (
           <div className="card p-10 text-center">
             <Loader2 className="w-8 h-8 animate-spin text-brand-500 mx-auto mb-3" />

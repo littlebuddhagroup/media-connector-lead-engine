@@ -164,6 +164,9 @@ export default function LeadsPage() {
   const [activeListId, setActiveListId] = useState<string | null>(null)
   const [activeViewId, setActiveViewId] = useState<string | null>(null)
 
+  // Panel lateral móvil
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
+
   // Panel lateral: crear lista
   const [showNewList, setShowNewList] = useState(false)
   const [newListName, setNewListName] = useState('')
@@ -533,11 +536,31 @@ export default function LeadsPage() {
     ? views.find(v => v.id === activeViewId)?.name ?? 'Vista'
     : null
 
+  // Contenido del panel lateral (reutilizado en desktop y drawer móvil)
+  const sidebarContent = (
+    <div className="p-3 space-y-1 flex-1 overflow-y-auto">{/* contenido se inyecta abajo */}</div>
+  )
+  void sidebarContent
+
   return (
-    <div className="animate-fade-in flex h-full">
+    <div className="animate-fade-in flex h-full min-w-0">
+
+      {/* ── Overlay móvil para el sidebar ───────────────────── */}
+      {mobileSidebarOpen && (
+        <div
+          className="md:hidden fixed inset-0 z-30 bg-black/40"
+          onClick={() => setMobileSidebarOpen(false)}
+        />
+      )}
 
       {/* ── Panel lateral izquierdo ──────────────────────────── */}
-      <aside className="w-52 shrink-0 border-r border-gray-100 bg-gray-50/50 flex flex-col overflow-y-auto">
+      {/* Desktop: siempre visible | Móvil: drawer desde la izquierda */}
+      <aside className={`
+        shrink-0 border-r border-gray-100 bg-gray-50/50 flex flex-col overflow-y-auto
+        md:w-52 md:static md:translate-x-0
+        fixed top-14 bottom-16 left-0 z-40 w-64 transition-transform duration-300
+        ${mobileSidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}
+      `}>
         <div className="p-3 space-y-1">
 
           {/* Todos los leads */}
@@ -669,12 +692,19 @@ export default function LeadsPage() {
                     </div>
                     <div className="flex gap-1">
                       <button onClick={handleSaveListEdit} disabled={savingListEdit || !editListName.trim()}
-                        className="flex-1 text-xs bg-brand-600 text-white py-1 rounded-md hover:bg-brand-700 disabled:opacity-40 transition-colors">
-                        {savingListEdit ? '...' : 'Guardar'}
+                        className="flex-1 text-xs bg-brand-600 text-white py-1 rounded-md hover:bg-brand-700 disabled:opacity-40 transition-colors flex items-center justify-center gap-1">
+                        <Save className="w-3 h-3" />{savingListEdit ? '...' : 'Guardar'}
                       </button>
                       <button onClick={() => setEditingListId(null)}
                         className="flex-1 text-xs border border-gray-200 py-1 rounded-md hover:bg-gray-50 transition-colors">
                         Cancelar
+                      </button>
+                      <button
+                        onClick={() => { setEditingListId(null); handleDeleteList(l.id, l.name) }}
+                        className="text-xs border border-red-200 text-red-500 py-1 px-2 rounded-md hover:bg-red-50 transition-colors flex items-center gap-1"
+                        title="Eliminar lista"
+                      >
+                        <Trash2 className="w-3 h-3" />
                       </button>
                     </div>
                   </div>
@@ -696,13 +726,6 @@ export default function LeadsPage() {
                       title="Editar lista"
                     >
                       <Pencil className="w-3 h-3" />
-                    </button>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); handleDeleteList(l.id, l.name) }}
-                      className="opacity-0 group-hover:opacity-100 p-1 text-gray-300 hover:text-red-500 hover:bg-red-50 rounded transition-all"
-                      title="Eliminar lista"
-                    >
-                      <Trash2 className="w-3 h-3" />
                     </button>
                   </div>
                 )}
@@ -761,17 +784,25 @@ export default function LeadsPage() {
       </aside>
 
       {/* ── Contenido principal ──────────────────────────────── */}
-      <div className="flex-1 min-w-0 overflow-y-auto">
+      <div className="flex-1 min-w-0 overflow-y-auto overflow-x-hidden">
         <TopBar
           title={contextLabel ? `${contextLabel}` : 'CRM / Leads'}
           subtitle={`${total} leads${contextLabel ? ` en ${contextLabel}` : ' en total'}`}
           actions={
-            <div className="flex gap-2">
+            <div className="flex gap-1.5 flex-wrap">
+              {/* Botón abrir sidebar solo en móvil */}
+              <button
+                onClick={() => setMobileSidebarOpen(true)}
+                className="md:hidden btn-secondary text-xs py-1.5 px-2"
+                title="Listas y vistas"
+              >
+                <List className="w-3.5 h-3.5" />
+              </button>
               <Link href="/discover" className="btn-secondary text-xs py-1.5">
-                <Telescope className="w-3.5 h-3.5" /> Buscar
+                <Telescope className="w-3.5 h-3.5" /><span className="hidden sm:inline"> Buscar</span>
               </Link>
               <button onClick={() => setShowNewLead(true)} className="btn-secondary text-xs py-1.5">
-                <Plus className="w-3.5 h-3.5" /> Nuevo lead
+                <Plus className="w-3.5 h-3.5" /><span className="hidden sm:inline"> Nuevo</span>
               </button>
               <Link
                 href={activeListId
@@ -779,54 +810,55 @@ export default function LeadsPage() {
                   : '/imports'}
                 className="btn-primary text-xs py-1.5"
               >
-                <Plus className="w-3.5 h-3.5" /> Importar
+                <Plus className="w-3.5 h-3.5" /><span className="hidden sm:inline"> Importar</span>
               </Link>
             </div>
           }
         />
 
-        <div className="p-4 space-y-3">
+        <div className="p-2 md:p-4 space-y-2 md:space-y-3">
 
           {/* Filtros */}
-          <div className="card p-3">
-            <div className="flex flex-wrap gap-2">
-              <div className="relative flex-1 min-w-[180px]">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
-                <input className="input pl-8 text-sm py-1.5"
-                  placeholder="Buscar empresa, nombre, email..."
-                  value={search}
-                  onChange={(e) => { setSearch(e.target.value); setPage(1) }} />
-              </div>
-              <select className="input w-auto text-sm py-1.5" value={status}
+          <div className="card p-2 md:p-3">
+            {/* Búsqueda siempre visible */}
+            <div className="relative mb-2">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
+              <input className="input pl-8 text-sm py-1.5 w-full"
+                placeholder="Buscar empresa, nombre, email..."
+                value={search}
+                onChange={(e) => { setSearch(e.target.value); setPage(1) }} />
+            </div>
+            {/* Filtros secundarios — en móvil van en grid 2 columnas */}
+            <div className="grid grid-cols-2 md:flex md:flex-wrap gap-1.5">
+              <select className="input text-xs py-1.5" value={status}
                 onChange={e => { setStatus(e.target.value); setPage(1) }}>
                 <option value="">Estado</option>
                 {STATUSES.map(s => <option key={s} value={s}>{statusLabel(s)}</option>)}
               </select>
-              <select className="input w-auto text-sm py-1.5" value={priority}
+              <select className="input text-xs py-1.5" value={priority}
                 onChange={e => { setPriority(e.target.value); setPage(1) }}>
                 <option value="">Prioridad</option>
                 {PRIORITIES.map(p => <option key={p} value={p}>{p}</option>)}
               </select>
-              <select className="input w-auto text-sm py-1.5" value={campaignId}
+              <select className="input text-xs py-1.5" value={campaignId}
                 onChange={e => { setCampaignId(e.target.value); setPage(1) }}>
                 <option value="">Campaña</option>
                 {campaigns.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
               </select>
-              <input className="input w-32 text-sm py-1.5" placeholder="Sector"
+              <input className="input text-xs py-1.5" placeholder="Sector"
                 value={sector} onChange={e => { setSector(e.target.value); setPage(1) }} />
-              <input className="input w-28 text-sm py-1.5" placeholder="País"
+              <input className="input text-xs py-1.5" placeholder="País"
                 value={country} onChange={e => { setCountry(e.target.value); setPage(1) }} />
               <div className="relative">
-                <Tag className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
-                <input className="input pl-7 w-28 text-sm py-1.5" placeholder="Etiqueta"
+                <Tag className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-gray-400" />
+                <input className="input pl-6 text-xs py-1.5 w-full" placeholder="Etiqueta"
                   value={tag} onChange={e => { setTag(e.target.value); setPage(1) }} />
               </div>
               {hasFilters && (
-                <div className="flex gap-1.5 items-center">
+                <div className="col-span-2 md:col-span-1 flex gap-1.5 items-center">
                   <button
                     onClick={() => { setShowSaveView(true); setNewViewName('') }}
                     className="flex items-center gap-1 text-xs text-brand-600 hover:text-brand-700 border border-brand-200 bg-brand-50 px-2 py-1.5 rounded-lg transition-colors"
-                    title="Guardar filtros como vista"
                   >
                     <Bookmark className="w-3 h-3" /> Guardar vista
                   </button>
@@ -873,28 +905,29 @@ export default function LeadsPage() {
 
           {/* Tabla */}
           <div className="card overflow-hidden">
-            <div className="overflow-x-auto">
+            <div className="overflow-x-auto -mx-px">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-gray-100 bg-gray-50/50">
-                    <th className="px-3 py-3 w-8">
+                    <th className="px-2 md:px-3 py-3 w-8">
                       <button onClick={toggleAll} className="text-gray-400 hover:text-brand-600 transition-colors">
                         {allSelected ? <CheckSquare className="w-4 h-4 text-brand-600" /> : <Square className="w-4 h-4" />}
                       </button>
                     </th>
                     {thSort('Empresa', 'company_name')}
-                    {thSort('Nombre', 'first_name')}
-                    <th className="px-3 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">Apellido</th>
-                    <th className="px-3 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">Cargo</th>
-                    {thSort('Dpto.', 'department')}
-                    <th className="px-3 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">Email</th>
-                    {thSort('Sector', 'sector')}
-                    <th className="px-3 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">Etiquetas</th>
-                    <th className="px-3 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">Campaña</th>
+                    {/* Columnas solo visibles en md+ */}
+                    <th className="hidden md:table-cell px-3 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">Nombre</th>
+                    <th className="hidden lg:table-cell px-3 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">Apellido</th>
+                    <th className="hidden lg:table-cell px-3 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">Cargo</th>
+                    <th className="hidden lg:table-cell px-3 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">Dpto.</th>
+                    <th className="hidden md:table-cell px-3 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">Email</th>
+                    <th className="hidden lg:table-cell px-3 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">Sector</th>
+                    <th className="hidden lg:table-cell px-3 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">Etiquetas</th>
+                    <th className="hidden lg:table-cell px-3 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">Campaña</th>
                     {thSort('Estado', 'status')}
                     {thSort('Score', 'score')}
-                    {thSort('Añadido', 'created_at')}
-                    <th className="px-3 py-3 w-8"></th>
+                    <th className="hidden md:table-cell px-3 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">Añadido</th>
+                    <th className="px-2 md:px-3 py-3 w-8"></th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-50">
@@ -931,41 +964,41 @@ export default function LeadsPage() {
                           </Link>
                           {lead.website && <p className="text-xs text-gray-400 truncate max-w-[130px]">{lead.domain || lead.website}</p>}
                         </td>
-                        <td className="px-3 py-2.5 text-gray-700 text-sm whitespace-nowrap font-medium">
+                        <td className="hidden md:table-cell px-3 py-2.5 text-gray-700 text-sm whitespace-nowrap font-medium">
                           {lead.first_name || <span className="text-gray-300 font-normal text-xs">—</span>}
                         </td>
-                        <td className="px-3 py-2.5 text-gray-700 text-sm whitespace-nowrap font-medium">
+                        <td className="hidden lg:table-cell px-3 py-2.5 text-gray-700 text-sm whitespace-nowrap font-medium">
                           {lead.last_name || <span className="text-gray-300 font-normal text-xs">—</span>}
                         </td>
-                        <td className="px-3 py-2.5 text-gray-600 text-sm max-w-[140px] truncate">
+                        <td className="hidden lg:table-cell px-3 py-2.5 text-gray-600 text-sm max-w-[140px] truncate">
                           {(lead as unknown as { job_title?: string }).job_title || <span className="text-gray-300 text-xs">—</span>}
                         </td>
-                        <td className="px-3 py-2.5 text-gray-600 text-sm max-w-[120px] truncate">
+                        <td className="hidden lg:table-cell px-3 py-2.5 text-gray-600 text-sm max-w-[120px] truncate">
                           {lead.department || <span className="text-gray-300 text-xs">—</span>}
                         </td>
-                        <td className="px-3 py-2.5 text-gray-700 text-sm max-w-[160px] truncate">{lead.email || <span className="text-gray-300 text-xs">—</span>}</td>
-                        <td className="px-3 py-2.5 text-gray-600 text-sm max-w-[110px] truncate">{lead.sector || <span className="text-gray-300 text-xs">—</span>}</td>
-                        <td className="px-3 py-2.5 max-w-[180px]">
+                        <td className="hidden md:table-cell px-3 py-2.5 text-gray-700 text-sm max-w-[160px] truncate">{lead.email || <span className="text-gray-300 text-xs">—</span>}</td>
+                        <td className="hidden lg:table-cell px-3 py-2.5 text-gray-600 text-sm max-w-[110px] truncate">{lead.sector || <span className="text-gray-300 text-xs">—</span>}</td>
+                        <td className="hidden lg:table-cell px-3 py-2.5 max-w-[180px]">
                           <TagEditor
                             leadId={lead.id}
                             initialTags={leadTags}
                             onSaved={tags => setLocalTags(prev => ({ ...prev, [lead.id]: tags }))}
                           />
                         </td>
-                        <td className="px-3 py-2.5 text-gray-500 text-xs max-w-[100px] truncate">
+                        <td className="hidden lg:table-cell px-3 py-2.5 text-gray-500 text-xs max-w-[100px] truncate">
                           {(lead as unknown as { campaign?: { name: string } }).campaign?.name || '—'}
                         </td>
-                        <td className="px-3 py-2.5">
-                          <select className="text-xs border-0 bg-transparent cursor-pointer focus:outline-none"
+                        <td className="px-2 md:px-3 py-2.5">
+                          <select className="text-xs border-0 bg-transparent cursor-pointer focus:outline-none max-w-[80px] md:max-w-none"
                             value={lead.status} onChange={(e) => updateLeadStatus(lead.id, e.target.value)}>
                             {STATUSES.map(s => <option key={s} value={s}>{statusLabel(s)}</option>)}
                           </select>
                         </td>
-                        <td className="px-3 py-2.5">
+                        <td className="px-2 md:px-3 py-2.5">
                           <span className={`badge font-semibold tabular-nums ${scoreToBg(lead.score)}`}>{lead.score}</span>
                         </td>
-                        <td className="px-3 py-2.5 text-gray-400 text-xs whitespace-nowrap">{formatDateRelative(lead.created_at)}</td>
-                        <td className="px-3 py-2.5">
+                        <td className="hidden md:table-cell px-3 py-2.5 text-gray-400 text-xs whitespace-nowrap">{formatDateRelative(lead.created_at)}</td>
+                        <td className="px-2 md:px-3 py-2.5">
                           <Link href={`/leads/${lead.id}`} className="text-xs text-brand-600 hover:text-brand-700">Ver →</Link>
                         </td>
                       </tr>
@@ -1144,7 +1177,7 @@ export default function LeadsPage() {
 
       {/* ─── Banner flotante de enriquecimiento en background ─── */}
       {enrichJob && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-white border border-brand-200 shadow-2xl rounded-2xl px-6 py-4 flex items-center gap-4 min-w-[320px] max-w-sm">
+        <div className="fixed bottom-20 md:bottom-6 left-1/2 -translate-x-1/2 z-50 bg-white border border-brand-200 shadow-2xl rounded-2xl px-4 md:px-6 py-3 md:py-4 flex items-center gap-3 md:gap-4 w-[calc(100vw-32px)] md:min-w-[320px] md:w-auto max-w-sm">
           <div className="w-9 h-9 rounded-full bg-brand-50 flex items-center justify-center shrink-0">
             <Loader2 className="w-5 h-5 animate-spin text-brand-600" />
           </div>

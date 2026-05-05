@@ -73,6 +73,16 @@
   }
 }
 
+/* Safe area para iOS (notch / home indicator) */
+.safe-area-pb {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* Tap highlight off en móvil */
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
 /* Scrollbar personalizado */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }

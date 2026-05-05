@@ -199,7 +199,7 @@ export default function HunterPage() {
         subtitle="Busca los emails de cualquier empresa por su dominio web"
       />
 
-      <div className="p-6 space-y-6">
+      <div className="p-3 md:p-6 space-y-4 md:space-y-6">
         {/* Formulario */}
         <div className="card p-5">
           <div className="p-3 bg-brand-50 border border-brand-100 rounded-xl text-xs text-brand-700 mb-5">

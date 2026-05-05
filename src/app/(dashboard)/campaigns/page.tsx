@@ -329,7 +329,7 @@ export default function CampaignsPage() {
         }
       />
 
-      <div className="p-6 space-y-5">
+      <div className="p-3 md:p-6 space-y-4 md:space-y-5">
         {/* Summary KPIs */}
         {campaigns.length > 0 && (
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
