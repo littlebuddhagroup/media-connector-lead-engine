@@ -134,3 +134,33 @@ export function parseKeywords(input: string): string[] {
     .map((k) => k.trim())
     .filter(Boolean)
 }
+
+// ─── HTML ↔ texto plano para emails ──────────────────────────
+
+/** Convierte texto plano con \n\n (párrafos) a HTML limpio con <p> */
+export function textToHtml(text: string): string {
+  if (!text?.trim()) return ''
+  // Si ya es HTML, devolver tal cual
+  if (/<[a-z][\s\S]*>/i.test(text)) return text
+  return text
+    .split(/\n\n+/)
+    .filter(p => p.trim())
+    .map(p => `<p style="margin:0 0 14px 0">${p.trim().replace(/\n/g, '<br>')}</p>`)
+    .join('\n')
+}
+
+/** Convierte HTML de email a texto plano con párrafos separados por \n\n */
+export function htmlToText(html: string): string {
+  if (!html?.trim()) return ''
+  return html
+    .replace(/<\/p>/gi, '\n\n')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}

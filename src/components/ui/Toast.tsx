@@ -25,17 +25,17 @@ function notify() {
 export const toast = {
   show(data: Omit<ToastData, 'id'>) {
     const id = Math.random().toString(36).slice(2)
-    _toasts = [..._toasts, { id, duration: 5000, ...data }]
+    _toasts = [..._toasts, { id, duration: 2000, ...data }]
     notify()
   },
   success(title: string, message?: string) {
     this.show({ type: 'success', title, message })
   },
   error(title: string, message?: string) {
-    this.show({ type: 'error', title, message, duration: 8000 })
+    this.show({ type: 'error', title, message, duration: 4000 })
   },
   warning(title: string, message?: string) {
-    this.show({ type: 'warning', title, message, duration: 7000 })
+    this.show({ type: 'warning', title, message, duration: 3500 })
   },
   info(title: string, message?: string) {
     this.show({ type: 'info', title, message })

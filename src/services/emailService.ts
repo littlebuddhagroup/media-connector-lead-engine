@@ -18,53 +18,106 @@ export interface EmailSendResult {
   error?: string
 }
 
+// Cuentas de envío disponibles
+export const SENDER_ACCOUNTS = [
+  { email: 'guillaume@mymediaconnect.com',   name: 'Guillaume — MyMediaConnect' },
+  { email: 'guillaume@gomymediaconnect.com', name: 'Guillaume — MyMediaConnect' },
+  { email: 'guillaume@mymediaconnectgo.com', name: 'Guillaume — MyMediaConnect' },
+  { email: 'guillaume@mymediaconnect.es',    name: 'Guillaume — MyMediaConnect' },
+]
+
 export async function sendEmail(
   input: SendEmailInput,
   userId: string,
   campaignId?: string,
-  messageId?: string
+  messageId?: string,
+  overrideFromEmail?: string
 ): Promise<EmailSendResult> {
   const supabase = createAdminClient()
 
-  // Verificar límite diario
-  const today = new Date()
-  today.setHours(0, 0, 0, 0)
-  const { count } = await supabase
-    .from('emails')
-    .select('id', { count: 'exact', head: true })
-    .eq('user_id', userId)
-    .gte('sent_at', today.toISOString())
-    .eq('status', 'sent')
-
-  const dailyLimit = parseInt(process.env.DAILY_EMAIL_LIMIT ?? '50')
-  if ((count ?? 0) >= dailyLimit) {
-    throw new Error(`Límite diario de ${dailyLimit} emails alcanzado`)
-  }
-
-  // Obtener settings del usuario
+  // Obtener settings del usuario primero (necesario para el límite diario)
   const { data: settings } = await supabase
     .from('settings')
     .select('*')
     .eq('user_id', userId)
     .single()
 
-  const fromEmail = settings?.email_from_address || process.env.RESEND_FROM_EMAIL || ''
-  const fromName = settings?.email_from_name || process.env.RESEND_FROM_NAME || 'Media Connector'
+  // Verificar límite diario (0 = sin límite)
+  const dailyLimit = settings?.email_daily_limit ?? 50
+  if (dailyLimit > 0) {
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+    const { count } = await supabase
+      .from('emails')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', userId)
+      .gte('sent_at', today.toISOString())
+      .eq('status', 'sent')
+    if ((count ?? 0) >= dailyLimit) {
+      throw new Error(`Límite diario de ${dailyLimit} emails alcanzado`)
+    }
+  }
 
-  // Añadir firma si existe
-  let body = input.body
+  // Si se especifica una cuenta de envío concreta, usarla; si no, usar la configurada en settings
+  const fromEmail = overrideFromEmail
+    || settings?.sender_email
+    || settings?.email_from_address
+    || process.env.RESEND_FROM_EMAIL
+    || ''
+  const senderAccount = SENDER_ACCOUNTS.find(a => a.email === fromEmail)
+  const fromName = senderAccount?.name
+    || settings?.email_from_name
+    || process.env.RESEND_FROM_NAME
+    || 'Guillaume — MyMediaConnect'
+
+  // Detectar si el cuerpo ya es HTML o texto plano
+  const bodyIsHtml = /<[a-z][\s\S]*>/i.test(input.body)
+
+  // Convertir texto plano a HTML con párrafos correctos
+  let htmlBody: string
+  if (bodyIsHtml) {
+    htmlBody = input.body
+  } else {
+    htmlBody = input.body
+      .split(/\n\n+/)
+      .filter(p => p.trim())
+      .map(p => `<p style="margin:0 0 14px 0">${p.trim().replace(/\n/g, '<br>')}</p>`)
+      .join('\n')
+  }
+  let textBody = input.body.replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').trim()
+
   if (settings?.email_signature) {
-    body += `\n\n--\n${settings.email_signature}`
+    const sigIsHtml = /<[a-z][\s\S]*>/i.test(settings.email_signature)
+    const sigHtml = sigIsHtml
+      ? settings.email_signature
+      : settings.email_signature.replace(/\n/g, '<br>')
+    htmlBody += `<br><hr style="border:none;border-top:1px solid #e5e7eb;margin:20px 0"><div style="font-size:13px;color:#6b7280;">${sigHtml}</div>`
+    textBody += `\n\n--\n${settings.email_signature.replace(/<[^>]+>/g, '')}`
   }
 
   try {
     const resend = getResendClient()
+    // Asegurar que el body tiene estructura HTML completa para que Resend inyecte el píxel de tracking
+    const fullHtmlBody = htmlBody.startsWith('<!DOCTYPE') || htmlBody.startsWith('<html')
+      ? htmlBody
+      : `<!DOCTYPE html><html><head><meta charset="utf-8"></head><body style="font-family:sans-serif;font-size:15px;line-height:1.6;color:#222;">${htmlBody}</body></html>`
+
+    // Reply-to doble:
+    // 1. Sistema: captura respuesta automáticamente vía inbound webhook
+    // 2. Guillaume: recibe la respuesta en su bandeja de entrada
+    const replySubdomain = process.env.REPLY_SUBDOMAIN ?? 'reply.mymediaconnect.com'
+    const forwardReplyTo = process.env.REPLY_FORWARD_EMAIL ?? 'guillaume@mymediaconnect.com'
+    const replyTo: string[] = []
+    if (input.lead_id) replyTo.push(`reply+${input.lead_id}@${replySubdomain}`)
+    if (forwardReplyTo) replyTo.push(forwardReplyTo)
+
     const result = await resend.emails.send({
       from: `${fromName} <${fromEmail}>`,
       to: input.to_name ? `${input.to_name} <${input.to_email}>` : input.to_email,
+      replyTo,
       subject: input.subject,
-      text: body,
-      html: body.replace(/\n/g, '<br>'),
+      text: textBody,
+      html: fullHtmlBody,
     })
 
     // Guardar en BD
@@ -78,7 +131,7 @@ export async function sendEmail(
       from_email: fromEmail,
       from_name: fromName,
       subject: input.subject,
-      body: body,
+      body: htmlBody,
       status: 'sent',
       provider: 'resend',
       provider_id: result.data?.id,
@@ -123,7 +176,7 @@ export async function sendEmail(
       from_email: fromEmail,
       from_name: fromName,
       subject: input.subject,
-      body: body,
+      body: htmlBody,
       status: 'failed',
       provider: 'resend',
       error_message: message,

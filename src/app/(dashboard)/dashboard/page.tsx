@@ -1,66 +1,148 @@
 import { createClient } from '@/lib/supabase/server'
+import { createAdminClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import TopBar from '@/components/layout/TopBar'
 import {
   Users, Mail, TrendingUp, Megaphone,
-  Calendar, ArrowUpRight, Clock, CheckCircle
+  Calendar, ArrowUpRight, Clock, CheckCircle,
+  Zap, MailOpen, MessageSquareReply
 } from 'lucide-react'
 import Link from 'next/link'
-import { formatDateRelative, statusLabel, statusColor, priorityColor, scoreToBg } from '@/lib/utils'
+import { formatDateRelative, statusLabel, statusColor, scoreToBg } from '@/lib/utils'
+import { getTeamUserIds } from '@/lib/teams'
 
 export default async function DashboardPage() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/login')
 
-  // Stats
-  const [leadsRes, emailsRes, campaignsRes, activityRes] = await Promise.all([
-    supabase.from('leads').select('status, score, created_at, priority').eq('user_id', user.id),
-    supabase.from('emails').select('status, sent_at').eq('user_id', user.id),
-    supabase.from('campaigns').select('id, name, status, total_leads, contacted_leads, replied_leads').eq('user_id', user.id),
-    supabase.from('activity_logs').select('type, title, created_at, lead_id')
-      .eq('user_id', user.id).order('created_at', { ascending: false }).limit(8),
+  const admin = createAdminClient()
+
+  // Obtener IDs de equipo (incluye al propio usuario + miembros del equipo)
+  const teamUserIds = await getTeamUserIds(user.id)
+
+  // Stats en paralelo — todos los miembros del equipo
+  const [leadsRes, emailsRes, campaignsRes, activityRes, seqEmailsRes, campaignLeadsRes] = await Promise.all([
+    admin.from('leads')
+      .select('id, status, score, created_at, priority')
+      .in('user_id', teamUserIds),
+    admin.from('emails')
+      .select('id, status, sent_at, opened_at')
+      .in('user_id', teamUserIds),
+    admin.from('campaigns')
+      .select('id, name, status, user_id')
+      .in('user_id', teamUserIds)
+      .order('created_at', { ascending: false }),
+    admin.from('activity_logs')
+      .select('id, type, title, created_at, lead_id')
+      .in('user_id', teamUserIds)
+      .order('created_at', { ascending: false })
+      .limit(10),
+    // Emails enviados por secuencias
+    admin.from('sequence_steps')
+      .select('id, status, sent_at')
+      .in('user_id', teamUserIds)
+      .eq('status', 'sent'),
+    // Leads por campaña — fuente directa (campaign_id en leads)
+    admin.from('leads')
+      .select('id, campaign_id, status')
+      .in('user_id', teamUserIds)
+      .not('campaign_id', 'is', null),
   ])
 
-  const leads = leadsRes.data ?? []
-  const emails = emailsRes.data ?? []
-  const campaigns = campaignsRes.data ?? []
-  const activities = activityRes.data ?? []
+  type LeadRow     = { id: string; status: string; score: number | null; created_at: string; priority: string }
+  type EmailRow    = { id: string; status: string | null; sent_at: string | null; opened_at: string | null }
+  type CampaignRow = { id: string; name: string; status: string; user_id: string }
+  type ActivityRow = { id: string; type: string; title: string; created_at: string; lead_id?: string }
+  type SeqRow      = { id: string; status: string; sent_at: string | null }
 
-  const yesterday = new Date(Date.now() - 86400000).toISOString()
+  const leads       = (leadsRes.data      ?? []) as LeadRow[]
+  const emails      = (emailsRes.data     ?? []) as EmailRow[]
+  const campaigns   = (campaignsRes.data  ?? []) as CampaignRow[]
+  const activities  = (activityRes.data   ?? []) as ActivityRow[]
+  const seqEmailsSent = (seqEmailsRes.data ?? []) as SeqRow[]
+  // campaignLeadsRes puede fallar si la tabla no existe aún — usamos fallback vacío
+  const campaignLeadsData = (!campaignLeadsRes.error ? campaignLeadsRes.data : null) ?? []
+
+  // Calcular stats por campaña desde leads directos
+  type CampStats = { total: number; contacted: number; replied: number }
+  const campStatsMap: Record<string, CampStats> = {}
+  const seenInCamp = new Set<string>()
+
+  const addToCampStats = (campaignId: string, leadId: string, status: string) => {
+    const key = `${campaignId}:${leadId}`
+    if (seenInCamp.has(key)) return
+    seenInCamp.add(key)
+    if (!campStatsMap[campaignId]) campStatsMap[campaignId] = { total: 0, contacted: 0, replied: 0 }
+    const m = campStatsMap[campaignId]
+    m.total++
+    if (['contacted','replied','interested','meeting_scheduled','closed'].includes(status)) m.contacted++
+    if (['replied','interested','meeting_scheduled','closed'].includes(status)) m.replied++
+  }
+
+  for (const l of campaignLeadsData as { id: string; campaign_id: string; status: string }[]) {
+    if (l.campaign_id) addToCampStats(l.campaign_id, l.id, l.status)
+  }
+
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  const todayStr = today.toISOString()
+
+  const totalEmailsSent = emails.length + seqEmailsSent.length
+  const totalOpened = emails.filter(e => e.opened_at || e.status === 'opened' || e.status === 'replied').length
+  const openRate = totalEmailsSent > 0 ? Math.round((totalOpened / totalEmailsSent) * 100) : 0
+
   const stats = {
     total_leads: leads.length,
-    new_leads: leads.filter(l => l.created_at > yesterday).length,
+    new_leads: leads.filter(l => l.created_at >= todayStr).length,
     contacted: leads.filter(l => ['contacted','replied','interested','meeting_scheduled','closed'].includes(l.status)).length,
     replied: leads.filter(l => ['replied','interested','meeting_scheduled','closed'].includes(l.status)).length,
-    emails_sent: emails.filter(e => e.status === 'sent').length,
+    emails_sent: totalEmailsSent,
     active_campaigns: campaigns.filter(c => c.status === 'active').length,
     meetings: leads.filter(l => l.status === 'meeting_scheduled').length,
+    open_rate: openRate,
   }
   const replyRate = stats.contacted > 0 ? Math.round((stats.replied / stats.contacted) * 100) : 0
 
-  // Últimos leads
-  const { data: recentLeads } = await supabase
+  type RecentLead = { id: string; company_name: string; status: string; priority: string; score: number | null; created_at: string; user_id: string }
+  // Últimos leads del equipo
+  const { data: recentLeadsRaw } = await admin
     .from('leads')
-    .select('id, company_name, status, priority, score, created_at, campaign:campaigns(name)')
-    .eq('user_id', user.id)
+    .select('id, company_name, status, priority, score, created_at, user_id')
+    .in('user_id', teamUserIds)
     .order('created_at', { ascending: false })
-    .limit(5)
+    .limit(6)
+  const recentLeads = (recentLeadsRaw ?? []) as RecentLead[]
 
   const statCards = [
     { label: 'Total leads', value: stats.total_leads, sub: `+${stats.new_leads} hoy`, icon: Users, color: 'bg-blue-50 text-blue-600' },
     { label: 'Contactados', value: stats.contacted, sub: `${Math.round(stats.contacted / Math.max(stats.total_leads, 1) * 100)}% del total`, icon: Mail, color: 'bg-purple-50 text-purple-600' },
-    { label: 'Ratio de respuesta', value: `${replyRate}%`, sub: `${stats.replied} respondidos`, icon: TrendingUp, color: 'bg-green-50 text-green-600' },
-    { label: 'Emails enviados', value: stats.emails_sent, sub: 'En total', icon: Mail, color: 'bg-orange-50 text-orange-600' },
+    { label: 'Ratio respuesta', value: `${replyRate}%`, sub: `${stats.replied} respondidos`, icon: MessageSquareReply, color: 'bg-green-50 text-green-600' },
+    { label: 'Emails enviados', value: stats.emails_sent, sub: `${stats.open_rate}% tasa apertura`, icon: MailOpen, color: 'bg-orange-50 text-orange-600' },
     { label: 'Campañas activas', value: stats.active_campaigns, sub: `${campaigns.length} total`, icon: Megaphone, color: 'bg-brand-50 text-brand-600' },
     { label: 'Reuniones', value: stats.meetings, sub: 'Agendadas', icon: Calendar, color: 'bg-emerald-50 text-emerald-600' },
   ]
+
+  const activityIcons: Record<string, string> = {
+    email_sent: '📧',
+    email_replied: '💬',
+    reply_detected: '💬',
+    sequence_replied: '✅',
+    enriched: '🔍',
+    lead_created: '✨',
+    imported: '📥',
+    note_added: '📝',
+    task_completed: '✅',
+    status_changed: '🔄',
+    email_opened: '👁',
+    email_bounced: '⚠️',
+  }
 
   return (
     <div className="animate-fade-in">
       <TopBar
         title="Dashboard"
-        subtitle="Resumen de tu actividad comercial"
+        subtitle={teamUserIds.length > 1 ? `Vista de equipo (${teamUserIds.length} miembros)` : 'Resumen de tu actividad comercial'}
         actions={
           <Link href="/leads" className="btn-primary text-xs py-1.5">
             <Users className="w-3.5 h-3.5" /> Ver todos los leads
@@ -93,7 +175,7 @@ export default async function DashboardPage() {
               </Link>
             </div>
             <div className="divide-y divide-gray-50">
-              {recentLeads?.length === 0 && (
+              {(!recentLeads || recentLeads.length === 0) && (
                 <div className="py-8 text-center text-sm text-gray-400">
                   Sin leads todavía. <Link href="/imports" className="text-brand-600 hover:underline">Importa tu primer CSV</Link>
                 </div>
@@ -114,8 +196,8 @@ export default async function DashboardPage() {
                     <span className={`badge text-xs ${statusColor(lead.status)}`}>
                       {statusLabel(lead.status)}
                     </span>
-                    <span className={`badge text-xs font-semibold ${scoreToBg(lead.score)}`}>
-                      {lead.score}
+                    <span className={`badge text-xs font-semibold ${scoreToBg(lead.score ?? 0)}`}>
+                      {lead.score ?? 0}
                     </span>
                   </div>
                 </Link>
@@ -133,17 +215,26 @@ export default async function DashboardPage() {
               {activities.length === 0 && (
                 <div className="py-8 text-center text-sm text-gray-400">Sin actividad registrada aún.</div>
               )}
-              {activities.map((act: { id?: string; title: string; created_at: string }) => (
-                <div key={act.id} className="flex items-start gap-3 px-5 py-3">
-                  <div className="w-6 h-6 rounded-full bg-brand-50 flex items-center justify-center mt-0.5 shrink-0">
-                    <CheckCircle className="w-3 h-3 text-brand-600" />
+              {activities.map((act) => {
+                const a = act as { id: string; type: string; title: string; created_at: string; lead_id?: string }
+                const emoji = activityIcons[a.type] ?? '📌'
+                return (
+                  <div key={a.id} className="flex items-start gap-3 px-5 py-3">
+                    <div className="w-6 h-6 rounded-full bg-gray-100 flex items-center justify-center mt-0.5 shrink-0 text-xs">
+                      {emoji}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm text-gray-700 truncate">{a.title}</p>
+                      <p className="text-xs text-gray-400">{formatDateRelative(a.created_at)}</p>
+                    </div>
+                    {a.lead_id && (
+                      <Link href={`/leads/${a.lead_id}`} className="text-brand-500 hover:text-brand-700 shrink-0">
+                        <ArrowUpRight className="w-3.5 h-3.5" />
+                      </Link>
+                    )}
                   </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm text-gray-700 truncate">{act.title}</p>
-                    <p className="text-xs text-gray-400">{formatDateRelative(act.created_at)}</p>
-                  </div>
-                </div>
-              ))}
+                )
+              })}
             </div>
           </div>
         </div>
@@ -158,23 +249,62 @@ export default async function DashboardPage() {
               </Link>
             </div>
             <div className="p-5 grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              {campaigns.filter(c => c.status === 'active').map((camp) => (
-                <Link key={camp.id} href={`/campaigns/${camp.id}`}
-                  className="p-4 border border-gray-200 rounded-xl hover:border-brand-300 hover:bg-brand-50/30 transition-colors">
-                  <p className="text-sm font-semibold text-gray-900 truncate">{camp.name}</p>
-                  <div className="mt-3 flex items-center gap-4 text-xs text-gray-500">
-                    <span>{camp.total_leads} leads</span>
-                    <span>{camp.contacted_leads} contactados</span>
-                    <span>{camp.replied_leads} respuestas</span>
-                  </div>
-                  <div className="mt-2 h-1.5 bg-gray-100 rounded-full overflow-hidden">
-                    <div
-                      className="h-full bg-brand-500 rounded-full transition-all"
-                      style={{ width: `${Math.min(100, camp.total_leads > 0 ? (camp.contacted_leads / camp.total_leads) * 100 : 0)}%` }}
-                    />
-                  </div>
-                </Link>
-              ))}
+              {campaigns.filter(c => c.status === 'active').map((camp) => {
+                const cs = campStatsMap[camp.id] ?? { total: 0, contacted: 0, replied: 0 }
+                const contactRate = cs.total > 0
+                  ? Math.round((cs.contacted / cs.total) * 100)
+                  : 0
+                return (
+                  <Link key={camp.id} href={`/campaigns/${camp.id}`}
+                    className="p-4 border border-gray-200 rounded-xl hover:border-brand-300 hover:bg-brand-50/30 transition-colors">
+                    <p className="text-sm font-semibold text-gray-900 truncate">{camp.name}</p>
+                    <div className="mt-3 grid grid-cols-3 gap-2 text-center">
+                      <div className="bg-gray-50 rounded-lg p-1.5">
+                        <p className="text-sm font-bold text-gray-800">{cs.total}</p>
+                        <p className="text-xs text-gray-400">leads</p>
+                      </div>
+                      <div className="bg-blue-50 rounded-lg p-1.5">
+                        <p className="text-sm font-bold text-blue-700">{cs.contacted}</p>
+                        <p className="text-xs text-blue-400">contactados</p>
+                      </div>
+                      <div className="bg-green-50 rounded-lg p-1.5">
+                        <p className="text-sm font-bold text-green-700">{cs.replied}</p>
+                        <p className="text-xs text-green-400">respuestas</p>
+                      </div>
+                    </div>
+                    <div className="mt-3">
+                      <div className="flex items-center justify-between text-xs text-gray-400 mb-1">
+                        <span>Progreso contactación</span>
+                        <span>{contactRate}%</span>
+                      </div>
+                      <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-brand-500 rounded-full transition-all"
+                          style={{ width: `${contactRate}%` }}
+                        />
+                      </div>
+                    </div>
+                  </Link>
+                )
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Accesos rápidos si no hay datos */}
+        {leads.length === 0 && (
+          <div className="card p-8 text-center space-y-4">
+            <div className="w-16 h-16 bg-brand-50 rounded-2xl flex items-center justify-center mx-auto">
+              <Zap className="w-8 h-8 text-brand-500" />
+            </div>
+            <div>
+              <h3 className="text-lg font-semibold text-gray-900">Empieza a generar leads</h3>
+              <p className="text-sm text-gray-500 mt-1">Importa un CSV, descubre empresas o crea tu primera campaña.</p>
+            </div>
+            <div className="flex items-center justify-center gap-3 flex-wrap">
+              <Link href="/imports" className="btn-primary text-sm">📥 Importar CSV</Link>
+              <Link href="/discover" className="btn-secondary text-sm">🔍 Descubrir empresas</Link>
+              <Link href="/campaigns/new" className="btn-secondary text-sm">🎯 Nueva campaña</Link>
             </div>
           </div>
         )}

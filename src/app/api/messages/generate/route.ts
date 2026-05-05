@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { generateMessage } from '@/services/aiService'
+import { getUserAISettings } from '@/lib/getUserAIProvider'
 import type { MessageType, MessageTone } from '@/types'
 
 export async function POST(request: Request) {
@@ -8,12 +9,8 @@ export async function POST(request: Request) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'No autenticado' }, { status: 401 })
 
-  if (!process.env.OPENAI_API_KEY) {
-    return NextResponse.json({ error: 'OpenAI API Key no configurada' }, { status: 400 })
-  }
-
   const body = await request.json()
-  const { lead_id, type, tone, additional_context } = body
+  const { lead_id, type, tone, additional_context, use_emojis } = body
 
   if (!lead_id || !type) {
     return NextResponse.json({ error: 'lead_id y type son requeridos' }, { status: 400 })
@@ -32,12 +29,17 @@ export async function POST(request: Request) {
   }
 
   try {
+    const { provider: aiProvider, model: aiModel } = await getUserAISettings(supabase, user.id)
     const generated = await generateMessage(
       lead,
       lead.enrichment?.[0] ?? null,
       type as MessageType,
       (tone as MessageTone) ?? 'consultivo',
-      additional_context
+      additional_context,
+      Boolean(use_emojis),
+      'es',
+      aiProvider,
+      aiModel
     )
 
     // Guardar el mensaje generado
@@ -51,7 +53,9 @@ export async function POST(request: Request) {
         tone: tone ?? 'consultivo',
         subject: generated.subject,
         body: generated.body,
-        model_used: process.env.OPENAI_MODEL ?? 'gpt-4o-mini',
+        model_used: aiProvider === 'groq'
+          ? (process.env.GROQ_MODEL ?? 'llama-3.3-70b-versatile')
+          : aiModel,
       })
       .select()
       .single()

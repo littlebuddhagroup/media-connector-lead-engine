@@ -12,7 +12,7 @@ export async function POST(request: Request) {
   }
 
   const body = await request.json()
-  const { lead_id, to_email, to_name, subject, email_body, message_id, campaign_id } = body
+  const { lead_id, to_email, to_name, subject, email_body, message_id, campaign_id, from_email } = body
 
   if (!lead_id || !to_email || !subject || !email_body) {
     return NextResponse.json(
@@ -25,7 +25,9 @@ export async function POST(request: Request) {
     const result = await sendEmail(
       { lead_id, to_email, to_name, subject, body: email_body, message_id },
       user.id,
-      campaign_id
+      campaign_id,
+      undefined,
+      from_email || undefined
     )
 
     if (!result.success) {

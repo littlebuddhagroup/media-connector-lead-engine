@@ -1,8 +1,9 @@
 'use client'
 
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, Suspense } from 'react'
+import { useSearchParams } from 'next/navigation'
 import TopBar from '@/components/layout/TopBar'
-import { Upload, FileText, AlertCircle, CheckCircle, X, ArrowRight } from 'lucide-react'
+import { Upload, FileText, AlertCircle, CheckCircle, X, ArrowRight, FileSpreadsheet, Info } from 'lucide-react'
 import { toast } from '@/components/ui/Toast'
 import Papa from 'papaparse'
 import type { Campaign } from '@/types'
@@ -19,60 +20,142 @@ const LEAD_FIELDS = [
   { key: 'linkedin_url', label: 'LinkedIn URL' },
 ]
 
-type ParsedRow = Record<string, string>
+const MAX_ROWS = 5000
 
-export default function ImportsPage() {
+type ParsedRow = Record<string, string>
+type FileType = 'csv' | 'xlsx'
+
+function ImportsPageContent() {
+  const searchParams = useSearchParams()
+  const listIdFromUrl = searchParams.get('list') ?? ''
+  const listNameFromUrl = searchParams.get('listName') ?? ''
+
   const [step, setStep] = useState<'upload' | 'map' | 'preview' | 'result'>('upload')
   const [rows, setRows] = useState<ParsedRow[]>([])
   const [headers, setHeaders] = useState<string[]>([])
   const [fileName, setFileName] = useState('')
+  const [fileType, setFileType] = useState<FileType>('csv')
   const [mapping, setMapping] = useState<Record<string, string>>({})
   const [campaignId, setCampaignId] = useState('')
   const [campaigns, setCampaigns] = useState<Campaign[]>([])
   const [importing, setImporting] = useState(false)
-  const [result, setResult] = useState<{total: number; imported: number; skipped: number; errors: Array<{row: number; message: string}>} | null>(null)
+  const [result, setResult] = useState<{
+    total: number; imported: number; skipped: number
+    errors: Array<{row: number; message: string}>
+  } | null>(null)
   const [dragOver, setDragOver] = useState(false)
+  const [rowWarning, setRowWarning] = useState(false)
 
   useEffect(() => {
     fetch('/api/campaigns').then(r => r.json()).then(j => setCampaigns(j.data ?? []))
   }, [])
 
-  const handleFile = (file: File) => {
-    if (!file.name.endsWith('.csv')) { toast.warning('Formato no válido', 'Solo se aceptan archivos CSV.'); return }
+  // ─── Auto-mapeo inteligente ──────────────────────────────────
+  const buildAutoMap = (hdrs: string[]) => {
+    const autoMap: Record<string, string> = {}
+    LEAD_FIELDS.forEach(field => {
+      const match = hdrs.find(h => {
+        const hl = h.toLowerCase()
+        return (
+          hl.includes(field.key.toLowerCase()) ||
+          hl.includes(field.label.toLowerCase()) ||
+          (field.key === 'company_name' && (hl.includes('empresa') || hl.includes('company') || hl.includes('nombre'))) ||
+          (field.key === 'email' && hl.includes('mail')) ||
+          (field.key === 'website' && (hl.includes('web') || hl.includes('url') || hl.includes('site') || hl.includes('dominio'))) ||
+          (field.key === 'phone' && (hl.includes('tel') || hl.includes('phone') || hl.includes('móvil'))) ||
+          (field.key === 'country' && (hl.includes('país') || hl.includes('pais') || hl.includes('country'))) ||
+          (field.key === 'sector' && (hl.includes('sector') || hl.includes('industria') || hl.includes('industry')))
+        )
+      })
+      if (match) autoMap[field.key] = match
+    })
+    return autoMap
+  }
+
+  // ─── Procesar CSV ────────────────────────────────────────────
+  const handleCSV = (file: File) => {
+    setFileType('csv')
     setFileName(file.name)
     Papa.parse(file, {
       header: true,
       skipEmptyLines: true,
       complete: (result) => {
-        const data = result.data as ParsedRow[]
+        let data = result.data as ParsedRow[]
         const hdrs = result.meta.fields ?? []
+        const truncated = data.length > MAX_ROWS
+        if (truncated) {
+          data = data.slice(0, MAX_ROWS)
+          setRowWarning(true)
+        } else {
+          setRowWarning(false)
+        }
         setRows(data)
         setHeaders(hdrs)
-        // Auto-mapeo inteligente
-        const autoMap: Record<string, string> = {}
-        LEAD_FIELDS.forEach(field => {
-          const match = hdrs.find(h =>
-            h.toLowerCase().includes(field.key.toLowerCase()) ||
-            h.toLowerCase().includes(field.label.toLowerCase()) ||
-            (field.key === 'company_name' && (h.toLowerCase().includes('empresa') || h.toLowerCase().includes('company') || h.toLowerCase().includes('nombre'))) ||
-            (field.key === 'email' && h.toLowerCase().includes('email')) ||
-            (field.key === 'website' && (h.toLowerCase().includes('web') || h.toLowerCase().includes('url') || h.toLowerCase().includes('site')))
-          )
-          if (match) autoMap[field.key] = match
-        })
-        setMapping(autoMap)
+        setMapping(buildAutoMap(hdrs))
         setStep('map')
       },
     })
   }
+
+  // ─── Procesar Excel ──────────────────────────────────────────
+  const handleExcel = async (file: File) => {
+    setFileType('xlsx')
+    setFileName(file.name)
+    try {
+      // Import dinámico para no añadir peso al bundle inicial
+      const XLSX = await import('xlsx')
+      const arrayBuffer = await file.arrayBuffer()
+      const workbook = XLSX.read(arrayBuffer, { type: 'array' })
+
+      // Usar la primera hoja
+      const sheetName = workbook.SheetNames[0]
+      const worksheet = workbook.Sheets[sheetName]
+
+      // Convertir a JSON con cabeceras
+      let data: ParsedRow[] = XLSX.utils.sheet_to_json(worksheet, {
+        defval: '',
+        raw: false,
+      })
+
+      const hdrs = data.length > 0 ? Object.keys(data[0]) : []
+      const truncated = data.length > MAX_ROWS
+      if (truncated) {
+        data = data.slice(0, MAX_ROWS)
+        setRowWarning(true)
+      } else {
+        setRowWarning(false)
+      }
+
+      setRows(data)
+      setHeaders(hdrs)
+      setMapping(buildAutoMap(hdrs))
+      setStep('map')
+    } catch {
+      toast.error('Error al leer Excel', 'Asegúrate de que el archivo no está protegido con contraseña.')
+    }
+  }
+
+  // ─── Dispatcher de archivo ───────────────────────────────────
+  const handleFile = useCallback((file: File) => {
+    const name = file.name.toLowerCase()
+    if (name.endsWith('.csv')) {
+      handleCSV(file)
+    } else if (name.endsWith('.xlsx') || name.endsWith('.xls')) {
+      handleExcel(file)
+    } else {
+      toast.warning('Formato no válido', 'Solo se aceptan archivos .csv, .xlsx o .xls')
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const onDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault()
     setDragOver(false)
     const file = e.dataTransfer.files[0]
     if (file) handleFile(file)
-  }, [])
+  }, [handleFile])
 
+  // ─── Importar ────────────────────────────────────────────────
   const handleImport = async () => {
     setImporting(true)
     const res = await fetch('/api/imports', {
@@ -83,6 +166,7 @@ export default function ImportsPage() {
         column_mapping: mapping,
         campaign_id: campaignId || null,
         filename: fileName,
+        list_id: listIdFromUrl || null,
       }),
     })
     const json = await res.json()
@@ -99,20 +183,30 @@ export default function ImportsPage() {
 
   return (
     <div className="animate-fade-in">
-      <TopBar title="Importar leads CSV" subtitle="Sube tu CSV y mapea las columnas" />
+      <TopBar
+        title="Importar leads"
+        subtitle="Sube un archivo CSV o Excel y mapea las columnas"
+      />
 
       <div className="p-6 max-w-3xl">
+        {/* Contexto de lista */}
+        {listIdFromUrl && (
+          <div className="mb-4 p-3 bg-brand-50 border border-brand-200 rounded-xl text-xs text-brand-800 flex items-center gap-2">
+            <span className="text-base">📋</span>
+            <span>Los leads importados se añadirán automáticamente a la lista <strong>{listNameFromUrl || listIdFromUrl}</strong>.</span>
+          </div>
+        )}
         {/* Stepper */}
         <div className="flex items-center gap-2 mb-6 text-xs">
-          {(['upload','map','preview','result'] as const).map((s, i) => (
+          {(['upload', 'map', 'preview', 'result'] as const).map((s, i) => (
             <div key={s} className="flex items-center gap-2">
               <div className={`w-6 h-6 rounded-full flex items-center justify-center font-semibold ${
                 step === s ? 'bg-brand-600 text-white' :
-                ['upload','map','preview','result'].indexOf(step) > i ? 'bg-green-500 text-white' :
+                ['upload', 'map', 'preview', 'result'].indexOf(step) > i ? 'bg-green-500 text-white' :
                 'bg-gray-200 text-gray-500'
               }`}>{i + 1}</div>
               <span className={step === s ? 'text-brand-700 font-medium' : 'text-gray-500'}>
-                {s === 'upload' ? 'Subir CSV' : s === 'map' ? 'Mapear columnas' : s === 'preview' ? 'Vista previa' : 'Resultado'}
+                {s === 'upload' ? 'Subir archivo' : s === 'map' ? 'Mapear columnas' : s === 'preview' ? 'Vista previa' : 'Resultado'}
               </span>
               {i < 3 && <ArrowRight className="w-3 h-3 text-gray-300" />}
             </div>
@@ -121,31 +215,53 @@ export default function ImportsPage() {
 
         {/* STEP 1: Upload */}
         {step === 'upload' && (
-          <div
-            className={`card border-2 border-dashed transition-colors cursor-pointer ${
-              dragOver ? 'border-brand-400 bg-brand-50' : 'border-gray-300 hover:border-brand-300'
-            }`}
-            onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
-            onDragLeave={() => setDragOver(false)}
-            onDrop={onDrop}
-            onClick={() => document.getElementById('csv-file')?.click()}
-          >
-            <div className="flex flex-col items-center justify-center py-16 text-center">
-              <div className="w-14 h-14 bg-brand-50 rounded-2xl flex items-center justify-center mb-4">
-                <Upload className="w-7 h-7 text-brand-500" />
+          <div className="space-y-4">
+            {/* Zona drag & drop */}
+            <div
+              className={`card border-2 border-dashed transition-colors cursor-pointer ${
+                dragOver ? 'border-brand-400 bg-brand-50' : 'border-gray-300 hover:border-brand-300'
+              }`}
+              onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
+              onDragLeave={() => setDragOver(false)}
+              onDrop={onDrop}
+              onClick={() => document.getElementById('import-file')?.click()}
+            >
+              <div className="flex flex-col items-center justify-center py-14 text-center">
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="w-12 h-12 bg-gray-50 border border-gray-200 rounded-xl flex items-center justify-center">
+                    <FileText className="w-6 h-6 text-gray-400" />
+                  </div>
+                  <div className="text-gray-300 text-2xl font-light">|</div>
+                  <div className="w-12 h-12 bg-green-50 border border-green-200 rounded-xl flex items-center justify-center">
+                    <FileSpreadsheet className="w-6 h-6 text-green-500" />
+                  </div>
+                </div>
+                <h3 className="text-base font-semibold text-gray-900 mb-1">
+                  Arrastra tu archivo aquí o haz clic
+                </h3>
+                <p className="text-sm text-gray-500">Formatos aceptados: <span className="font-medium">.csv</span> y <span className="font-medium">.xlsx / .xls</span></p>
+                <p className="text-xs text-gray-400 mt-2">
+                  Máximo {MAX_ROWS.toLocaleString()} filas por importación
+                </p>
               </div>
-              <h3 className="text-base font-semibold text-gray-900 mb-1">
-                Arrastra tu CSV aquí o haz clic
-              </h3>
-              <p className="text-sm text-gray-500">Solo archivos .csv</p>
-              <p className="text-xs text-gray-400 mt-2">
-                Columnas sugeridas: empresa, web, email, teléfono, país, sector
-              </p>
+              <input
+                id="import-file"
+                type="file"
+                accept=".csv,.xlsx,.xls"
+                className="hidden"
+                onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f) }}
+              />
             </div>
-            <input
-              id="csv-file" type="file" accept=".csv" className="hidden"
-              onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f) }}
-            />
+
+            {/* Info límite */}
+            <div className="flex items-start gap-2 p-3 bg-blue-50 border border-blue-100 rounded-xl text-xs text-blue-700">
+              <Info className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+              <span>
+                Límite de <strong>{MAX_ROWS.toLocaleString()} filas</strong> por importación.
+                Para volúmenes mayores, divide el archivo en varias importaciones.
+                Los duplicados (mismo dominio o email) se detectan y omiten automáticamente.
+              </span>
+            </div>
           </div>
         )}
 
@@ -154,9 +270,17 @@ export default function ImportsPage() {
           <div className="space-y-4">
             <div className="card p-5">
               <div className="flex items-center gap-2 mb-4">
-                <FileText className="w-4 h-4 text-brand-500" />
+                {fileType === 'xlsx'
+                  ? <FileSpreadsheet className="w-4 h-4 text-green-500" />
+                  : <FileText className="w-4 h-4 text-brand-500" />
+                }
                 <span className="text-sm font-medium text-gray-700">{fileName}</span>
                 <span className="text-xs text-gray-400">({rows.length} filas)</span>
+                {rowWarning && (
+                  <span className="ml-auto text-xs text-amber-600 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full">
+                    Truncado a {MAX_ROWS.toLocaleString()} filas
+                  </span>
+                )}
               </div>
 
               <div>
@@ -168,7 +292,7 @@ export default function ImportsPage() {
               </div>
 
               <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">
-                Mapear columnas CSV → campos del lead
+                Mapear columnas del archivo → campos del lead
               </h4>
               <div className="space-y-2">
                 {LEAD_FIELDS.map(field => (
@@ -240,11 +364,18 @@ export default function ImportsPage() {
               </div>
             </div>
 
+            {rowWarning && (
+              <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl flex items-start gap-2 text-xs text-amber-700">
+                <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                El archivo tenía más de {MAX_ROWS.toLocaleString()} filas. Solo se importarán las primeras {rows.length.toLocaleString()}.
+              </div>
+            )}
+
             <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl flex items-start gap-3">
               <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
               <div className="text-xs text-amber-700">
                 <p className="font-medium">Antes de importar:</p>
-                <p>Se detectarán duplicados por dominio y email. Las filas duplicadas serán omitidas.</p>
+                <p>Se detectarán duplicados por dominio y email. Las filas duplicadas serán omitidas automáticamente.</p>
               </div>
             </div>
 
@@ -298,7 +429,7 @@ export default function ImportsPage() {
 
             <div className="flex gap-3 justify-center">
               <button
-                onClick={() => { setStep('upload'); setRows([]); setHeaders([]); setMapping({}); setResult(null) }}
+                onClick={() => { setStep('upload'); setRows([]); setHeaders([]); setMapping({}); setResult(null); setRowWarning(false) }}
                 className="btn-secondary text-xs"
               >
                 Nueva importación
@@ -309,5 +440,13 @@ export default function ImportsPage() {
         )}
       </div>
     </div>
+  )
+}
+
+export default function ImportsPage() {
+  return (
+    <Suspense fallback={<div className="p-6 text-gray-400">Cargando...</div>}>
+      <ImportsPageContent />
+    </Suspense>
   )
 }

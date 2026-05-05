@@ -1,12 +1,27 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, lazy, Suspense } from 'react'
+
+// Editor de texto enriquecido (requiere: pnpm add @tiptap/react @tiptap/starter-kit @tiptap/extension-link @tiptap/extension-placeholder @tiptap/extension-image)
+const RichTextEditor = lazy(() => import('@/components/ui/RichTextEditor').catch(() => ({
+  default: ({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder?: string }) => (
+    <textarea
+      className="input resize-none w-full"
+      rows={8}
+      value={value}
+      onChange={e => onChange(e.target.value)}
+      placeholder={placeholder ?? 'Cuerpo del email...'}
+    />
+  )
+})))
 import TopBar from '@/components/layout/TopBar'
 import Link from 'next/link'
 import {
   ArrowLeft, Globe, Mail, Phone, Linkedin, Zap, MessageSquare,
-  Send, StickyNote, CheckSquare, Activity, Star, Edit2, ExternalLink, Trash2,
-  Mails, Play, Pause, CheckCircle2, Clock, Loader2
+  Send, StickyNote, CheckSquare, Activity, Edit2, ExternalLink, Trash2,
+  Mails, Play, Pause, CheckCircle2, Clock, Loader2, Copy, Check, Sparkles, PenLine,
+  ChevronDown, ChevronUp, Save, CalendarClock, AlertTriangle, RefreshCw, Pencil, RotateCcw,
+  Megaphone, PlusCircle, X as XIcon, UserX, UserCheck, BellOff
 } from 'lucide-react'
 import {
   statusLabel, statusColor, priorityColor, scoreToBg,
@@ -19,6 +34,8 @@ const STATUSES = [
   'new','enriched','pending_review','approved','contacted',
   'replied','interested','not_interested','meeting_scheduled','closed','discarded'
 ]
+
+const PRIORITIES = ['low', 'medium', 'high']
 
 const MESSAGE_TYPES = [
   { value: 'initial_email', label: 'Email inicial' },
@@ -36,9 +53,39 @@ const TONES = [
   { value: 'directo', label: 'Directo' },
 ]
 
+type LeadRecord = Record<string, unknown>
+type SequenceStep = {
+  id: string
+  step_number: number
+  status: string
+  subject: string
+  body: string
+  scheduled_for?: string
+  sent_at?: string
+}
+type Sequence = {
+  id: string
+  name: string
+  status: string
+  current_step: number
+  created_at: string
+  sequence_steps?: SequenceStep[]
+}
+
+// Helpers
+function isOverdue(scheduled_for?: string) {
+  if (!scheduled_for) return false
+  return new Date(scheduled_for) <= new Date()
+}
+
+function minutesUntil(scheduled_for?: string) {
+  if (!scheduled_for) return null
+  return Math.round((new Date(scheduled_for).getTime() - Date.now()) / 60000)
+}
+
 export default function LeadDetailPage({ params }: { params: { id: string } }) {
   const { id } = params
-  const [lead, setLead] = useState<Record<string, unknown> | null>(null)
+  const [lead, setLead] = useState<LeadRecord | null>(null)
   const [loading, setLoading] = useState(true)
   const [enriching, setEnriching] = useState(false)
   const [activeTab, setActiveTab] = useState<'info'|'messages'|'emails'|'notes'|'tasks'|'activity'|'sequences'>('info')
@@ -48,13 +95,24 @@ export default function LeadDetailPage({ params }: { params: { id: string } }) {
   const [showNoteModal, setShowNoteModal] = useState(false)
   const [showSendEmailModal, setShowSendEmailModal] = useState(false)
   const [showDeleteModal, setShowDeleteModal] = useState(false)
+  const [showEditModal, setShowEditModal] = useState(false)
   const [deleting, setDeleting] = useState(false)
 
   // Generate message form
+  const [msgTab, setMsgTab] = useState<'generate' | 'improve'>('generate')
   const [msgType, setMsgType] = useState('initial_email')
   const [msgTone, setMsgTone] = useState('consultivo')
+  const [msgEmojis, setMsgEmojis] = useState(false)
   const [generatingMsg, setGeneratingMsg] = useState(false)
   const [generatedMsg, setGeneratedMsg] = useState<{subject?: string; body: string} | null>(null)
+  const [copiedMsg, setCopiedMsg] = useState(false)
+
+  // Improve message form
+  const [userDraft, setUserDraft] = useState('')
+  const [improveInstructions, setImproveInstructions] = useState('')
+  const [improvingMsg, setImprovingMsg] = useState(false)
+  const [improvedMsg, setImprovedMsg] = useState<{subject?: string; body: string} | null>(null)
+  const [copiedImproved, setCopiedImproved] = useState(false)
 
   // Note form
   const [noteContent, setNoteContent] = useState('')
@@ -63,18 +121,144 @@ export default function LeadDetailPage({ params }: { params: { id: string } }) {
   // Email send form
   const [emailSubject, setEmailSubject] = useState('')
   const [emailBody, setEmailBody] = useState('')
+  const [emailFromAccount, setEmailFromAccount] = useState('guillaume@mymediaconnect.com')
   const [sendingEmail, setSendingEmail] = useState(false)
 
   // Sequences
-  const [sequences, setSequences] = useState<Record<string, unknown>[]>([])
+  const [sequences, setSequences] = useState<Sequence[]>([])
   const [launchingSequence, setLaunchingSequence] = useState(false)
   const [showSequenceModal, setShowSequenceModal] = useState(false)
+  const [seqLanguage, setSeqLanguage] = useState('es')
+  const [triggeringSequence, setTriggeringSequence] = useState(false)
+  const [triggerResult, setTriggerResult] = useState<{ sent: number; skipped: number; failed: number; message: string } | null>(null)
+  const [restartingSeqId, setRestartingSeqId] = useState<string | null>(null)
+
+  // Preview de secuencia (revisión antes de enviar)
+  type PreviewStep = { step_number: number; label: string; subject: string; body: string; delay_days: number; scheduled_for: string }
+  const [seqModalStep, setSeqModalStep] = useState<'info' | 'preview'>('info')
+  const [generatingPreview, setGeneratingPreview] = useState(false)
+  const [previewSteps, setPreviewSteps] = useState<PreviewStep[]>([])
+  const [expandedPreviewStep, setExpandedPreviewStep] = useState<number>(1)
+
+  // Sequence step editor
+  const [expandedStep, setExpandedStep] = useState<string | null>(null)
+  const [stepEdits, setStepEdits] = useState<Record<string, { subject: string; body: string; scheduled_for: string }>>({})
+  const [savingStep, setSavingStep] = useState<string | null>(null)
+
+  // Edit lead form
+  const [editForm, setEditForm] = useState<Record<string, string>>({})
+  const [savingEdit, setSavingEdit] = useState(false)
+
+  // Campaigns (many-to-many)
+  type LeadCampaign = { campaign_id: string; campaign: { id: string; name: string; status: string } }
+  type AllCampaign = { id: string; name: string; status: string }
+  const [leadCampaigns, setLeadCampaigns] = useState<LeadCampaign[]>([])
+  const [allCampaigns, setAllCampaigns] = useState<AllCampaign[]>([])
+  const [showAddCampaign, setShowAddCampaign] = useState(false)
+  const [selectedCampaignId, setSelectedCampaignId] = useState('')
+  const [savingCampaign, setSavingCampaign] = useState(false)
+  const [removingCampaignId, setRemovingCampaignId] = useState<string | null>(null)
+
+  // Newsletter opt-out
+  const [newsletterUnsubscribed, setNewsletterUnsubscribed] = useState(false)
+  const [togglingUnsubscribe, setTogglingUnsubscribe] = useState(false)
+
+  const fetchLeadCampaigns = async () => {
+    const res = await fetch(`/api/leads/${id}/campaigns`)
+    const json = await res.json()
+    setLeadCampaigns(json.data ?? [])
+  }
+
+  const fetchAllCampaigns = async () => {
+    const res = await fetch('/api/campaigns')
+    const json = await res.json()
+    setAllCampaigns(json.data ?? [])
+  }
+
+  const handleAddCampaign = async () => {
+    if (!selectedCampaignId) return
+    setSavingCampaign(true)
+    const res = await fetch(`/api/leads/${id}/campaigns`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ campaign_id: selectedCampaignId }),
+    })
+    setSavingCampaign(false)
+    if (res.ok) {
+      setShowAddCampaign(false)
+      setSelectedCampaignId('')
+      fetchLeadCampaigns()
+      toast.success('Campaña añadida', 'El lead ha sido añadido a la campaña.')
+    } else {
+      const json = await res.json()
+      toast.error('Error', json.error ?? 'No se pudo añadir a la campaña.')
+    }
+  }
+
+  const handleRemoveCampaign = async (campaignId: string) => {
+    setRemovingCampaignId(campaignId)
+    const res = await fetch(`/api/leads/${id}/campaigns`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ campaign_id: campaignId }),
+    })
+    setRemovingCampaignId(null)
+    if (res.ok) {
+      fetchLeadCampaigns()
+      toast.success('Campaña eliminada', 'El lead ha sido quitado de la campaña.')
+    } else {
+      const json = await res.json()
+      toast.error('Error', json.error ?? 'No se pudo quitar de la campaña.')
+    }
+  }
+
+  const fetchNewsletterStatus = async (email: string) => {
+    const res = await fetch('/api/newsletters/unsubscribes')
+    const json = await res.json()
+    const list: Array<{ email: string }> = json.data ?? []
+    setNewsletterUnsubscribed(list.some(u => u.email.toLowerCase() === email.toLowerCase()))
+  }
+
+  const handleToggleNewsletterOptOut = async () => {
+    const email = (lead as Record<string, string>)?.email
+    if (!email) return
+    setTogglingUnsubscribe(true)
+
+    if (newsletterUnsubscribed) {
+      // Reactivar — DELETE
+      const res = await fetch(`/api/newsletters/unsubscribes?email=${encodeURIComponent(email)}`, { method: 'DELETE' })
+      setTogglingUnsubscribe(false)
+      if (res.ok) {
+        setNewsletterUnsubscribed(false)
+        toast.success('Reactivado', `${email} vuelve a recibir newsletters.`)
+      } else {
+        toast.error('Error', 'No se pudo reactivar.')
+      }
+    } else {
+      // Dar de baja manual — POST
+      const res = await fetch('/api/newsletters/unsubscribes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, lead_id: id, reason: 'manual' }),
+      })
+      setTogglingUnsubscribe(false)
+      if (res.ok) {
+        setNewsletterUnsubscribed(true)
+        toast.success('Dado de baja', `${email} ya no recibirá newsletters.`)
+      } else {
+        toast.error('Error', 'No se pudo dar de baja.')
+      }
+    }
+  }
 
   const fetchLead = async () => {
     const res = await fetch(`/api/leads/${id}`)
     const json = await res.json()
     setLead(json.data)
     setLoading(false)
+    // Cargar estado newsletter si tiene email
+    const email = json.data?.email
+    if (email) fetchNewsletterStatus(email)
   }
 
   const fetchSequences = async () => {
@@ -83,17 +267,31 @@ export default function LeadDetailPage({ params }: { params: { id: string } }) {
     setSequences(json.data ?? [])
   }
 
-  useEffect(() => { fetchLead(); fetchSequences() }, [id])
+  useEffect(() => { fetchLead(); fetchSequences(); fetchLeadCampaigns(); fetchAllCampaigns() }, [id])
 
   const handleEnrich = async () => {
     setEnriching(true)
     const res = await fetch(`/api/leads/${id}/enrich`, { method: 'POST' })
+    const json = await res.json()
     setEnriching(false)
     if (res.ok) {
-      fetchLead()
+      // Actualizar estado directamente desde la respuesta del API.
+      // NO llamamos fetchLead() porque el join de Supabase puede devolver
+      // enrichment vacío y sobreescribiría los datos que acabamos de recibir.
+      if (json.data?.enrichment) {
+        setLead(prev => prev ? {
+          ...prev,
+          enrichment: [json.data.enrichment],
+          score: json.data.score ?? prev.score,
+          priority: json.data.priority ?? prev.priority,
+          is_enriched: true,
+          status: (prev.status === 'new' || prev.status === 'enriched') ? 'enriched' : prev.status,
+        } : prev)
+      }
+      // Ir al tab de Análisis IA para ver el resultado
+      setActiveTab('info')
       toast.success('Lead enriquecido', 'El análisis IA se ha completado correctamente.')
     } else {
-      const json = await res.json()
       toast.aiError(json.error ?? 'Error desconocido')
     }
   }
@@ -119,13 +317,53 @@ export default function LeadDetailPage({ params }: { params: { id: string } }) {
     fetchLead()
   }
 
+  const handleOpenEdit = () => {
+    if (!lead) return
+    setEditForm({
+      company_name: (lead.company_name as string) ?? '',
+      first_name: (lead.first_name as string) ?? '',
+      last_name: (lead.last_name as string) ?? '',
+      department: (lead.department as string) ?? '',
+      job_title: (lead.job_title as string) ?? '',
+      email: (lead.email as string) ?? '',
+      phone: (lead.phone as string) ?? '',
+      website: (lead.website as string) ?? '',
+      country: (lead.country as string) ?? '',
+      city: (lead.city as string) ?? '',
+      sector: (lead.sector as string) ?? '',
+      linkedin_url: (lead.linkedin_url as string) ?? '',
+      description: (lead.description as string) ?? '',
+      priority: (lead.priority as string) ?? 'medium',
+      status: (lead.status as string) ?? 'new',
+    })
+    setShowEditModal(true)
+  }
+
+  const handleSaveEdit = async () => {
+    setSavingEdit(true)
+    const res = await fetch(`/api/leads/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(editForm),
+    })
+    setSavingEdit(false)
+    if (res.ok) {
+      setShowEditModal(false)
+      fetchLead()
+      toast.success('Lead actualizado', 'Los cambios han sido guardados.')
+    } else {
+      const json = await res.json()
+      toast.error('Error al guardar', json.error ?? 'Inténtalo de nuevo.')
+    }
+  }
+
   const handleGenerateMessage = async () => {
     setGeneratingMsg(true)
     setGeneratedMsg(null)
     const res = await fetch('/api/messages/generate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ lead_id: id, type: msgType, tone: msgTone }),
+      body: JSON.stringify({ lead_id: id, type: msgType, tone: msgTone, use_emojis: msgEmojis }),
     })
     setGeneratingMsg(false)
     if (res.ok) {
@@ -135,6 +373,99 @@ export default function LeadDetailPage({ params }: { params: { id: string } }) {
     } else {
       const json = await res.json()
       toast.aiError(json.error ?? 'Error generando mensaje')
+    }
+  }
+
+  const handleExpandStep = (step: SequenceStep) => {
+    if (expandedStep === step.id) {
+      setExpandedStep(null)
+      return
+    }
+    setExpandedStep(step.id)
+    if (!stepEdits[step.id]) {
+      const dt = step.scheduled_for
+        ? new Date(step.scheduled_for).toISOString().slice(0, 16)
+        : ''
+      setStepEdits(prev => ({
+        ...prev,
+        [step.id]: { subject: step.subject ?? '', body: step.body ?? '', scheduled_for: dt },
+      }))
+    }
+  }
+
+  const handleSaveStep = async (stepId: string) => {
+    const edits = stepEdits[stepId]
+    if (!edits) return
+    setSavingStep(stepId)
+    const res = await fetch('/api/sequences/steps', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        step_id: stepId,
+        subject: edits.subject,
+        body: edits.body,
+        scheduled_for: edits.scheduled_for ? new Date(edits.scheduled_for).toISOString() : undefined,
+      }),
+    })
+    setSavingStep(null)
+    if (res.ok) {
+      fetchSequences()
+      setExpandedStep(null)
+      toast.success('Paso guardado', 'Los cambios han sido guardados correctamente.')
+    } else {
+      const json = await res.json()
+      toast.error('Error al guardar', json.error ?? 'Inténtalo de nuevo.')
+    }
+  }
+
+  const handleTriggerNow = async () => {
+    setTriggeringSequence(true)
+    setTriggerResult(null)
+    const res = await fetch('/api/sequences/process', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lead_id: id }),
+    })
+    const json = await res.json()
+    setTriggeringSequence(false)
+    setTriggerResult({ sent: json.sent ?? 0, skipped: json.skipped ?? 0, failed: json.failed ?? 0, message: json.message ?? '' })
+    if ((json.sent ?? 0) > 0) {
+      fetchSequences()
+      fetchLead()
+      toast.success('Emails enviados', json.message)
+    } else {
+      toast.info?.('Sin envíos', json.message) ?? toast.success('Sin cambios', json.message)
+    }
+  }
+
+  const handleCopyMsg = (text: string, setCopied: (v: boolean) => void) => {
+    navigator.clipboard.writeText(text)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+
+  const handleImproveMessage = async () => {
+    if (!userDraft.trim()) return
+    setImprovingMsg(true)
+    setImprovedMsg(null)
+    const res = await fetch('/api/messages/improve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        lead_id: id,
+        draft: userDraft,
+        tone: msgTone,
+        instructions: improveInstructions || undefined,
+      }),
+    })
+    setImprovingMsg(false)
+    if (res.ok) {
+      const json = await res.json()
+      setImprovedMsg({ subject: json.data.subject, body: json.data.body })
+      fetchLead()
+    } else {
+      const json = await res.json()
+      toast.aiError(json.error ?? 'Error mejorando mensaje')
     }
   }
 
@@ -164,6 +495,7 @@ export default function LeadDetailPage({ params }: { params: { id: string } }) {
         subject: emailSubject,
         email_body: emailBody,
         campaign_id: (lead as Record<string, string>)?.campaign_id,
+        from_email: emailFromAccount || undefined,
       }),
     })
     setSendingEmail(false)
@@ -179,6 +511,35 @@ export default function LeadDetailPage({ params }: { params: { id: string } }) {
     }
   }
 
+  const handleGeneratePreview = async () => {
+    setGeneratingPreview(true)
+    const res = await fetch('/api/sequences/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lead_id: id, language: seqLanguage }),
+    })
+    setGeneratingPreview(false)
+    if (res.ok) {
+      const json = await res.json()
+      // Calcular fechas por defecto: hoy a las 9:00 + delay_days por step
+      const base = new Date()
+      base.setHours(9, 0, 0, 0)
+      // Si ya pasaron las 9:00 de hoy, el paso 1 va a mañana a las 9:00
+      if (new Date() > base) base.setDate(base.getDate() + 1)
+      const withDates = json.steps.map((s: Omit<PreviewStep, 'scheduled_for'>) => {
+        const d = new Date(base)
+        d.setDate(d.getDate() + s.delay_days)
+        return { ...s, scheduled_for: d.toISOString().slice(0, 16) }
+      })
+      setPreviewSteps(withDates)
+      setSeqModalStep('preview')
+      setExpandedPreviewStep(1)
+    } else {
+      const json = await res.json()
+      toast.aiError(json.error ?? 'Error generando emails')
+    }
+  }
+
   const handleLaunchSequence = async () => {
     setLaunchingSequence(true)
     const res = await fetch('/api/sequences', {
@@ -187,14 +548,24 @@ export default function LeadDetailPage({ params }: { params: { id: string } }) {
       body: JSON.stringify({
         lead_id: id,
         campaign_id: (lead as Record<string, string>)?.campaign_id ?? null,
+        language: seqLanguage,
+        custom_steps: previewSteps.map(s => ({
+          step_number: s.step_number,
+          subject: s.subject,
+          body: s.body,
+          delay_days: s.delay_days,
+          scheduled_for: s.scheduled_for ? new Date(s.scheduled_for).toISOString() : undefined,
+        })),
       }),
     })
     setLaunchingSequence(false)
     if (res.ok) {
       setShowSequenceModal(false)
+      setSeqModalStep('info')
+      setPreviewSteps([])
       fetchSequences()
       fetchLead()
-      toast.success('Secuencia iniciada', 'Los 3 emails han sido programados correctamente.')
+      toast.success('Secuencia programada', 'Los 3 emails están programados y se enviarán automáticamente en las fechas elegidas.')
     } else {
       const json = await res.json()
       toast.aiError(json.error ?? 'Error al iniciar secuencia')
@@ -210,6 +581,59 @@ export default function LeadDetailPage({ params }: { params: { id: string } }) {
     fetchSequences()
   }
 
+  const handleDeleteSequence = async (sequenceId: string) => {
+    if (!confirm('¿Borrar esta secuencia definitivamente? Se eliminarán todos sus pasos y no se enviará nada más.')) return
+    const res = await fetch('/api/sequences', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sequence_id: sequenceId }),
+    })
+    if (res.ok) {
+      fetchSequences()
+      toast.success('Secuencia eliminada')
+    } else {
+      const j = await res.json()
+      toast.error('Error', j.error ?? 'No se pudo borrar la secuencia.')
+    }
+  }
+
+  const handleRestartSequence = async (sequenceId: string) => {
+    if (!confirm('¿Reiniciar la secuencia? Se cancelará la actual, se regenerarán los 3 emails con IA y se reprogramarán desde hoy.')) return
+    setRestartingSeqId(sequenceId)
+    setTriggerResult(null)
+    const res = await fetch('/api/sequences', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sequence_id: sequenceId, action: 'restart' }),
+    })
+    setRestartingSeqId(null)
+    if (res.ok) {
+      fetchSequences()
+      fetchLead()
+      toast.success('Secuencia reiniciada', 'Se han generado 3 nuevos emails y reprogramado las fechas.')
+    } else {
+      const json = await res.json()
+      toast.aiError(json.error ?? 'Error al reiniciar la secuencia')
+    }
+  }
+
+  const handleMarkReplied = async (sequenceId: string) => {
+    if (!confirm('¿Marcar como respondido? Esto cancelará los emails pendientes de la secuencia y marcará el lead como respondido.')) return
+    const res = await fetch('/api/sequences', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sequence_id: sequenceId, action: 'mark_replied' }),
+    })
+    if (res.ok) {
+      fetchSequences()
+      fetchLead()
+      toast.success('Marcado como respondido', 'La secuencia ha sido cancelada y el lead actualizado.')
+    } else {
+      const json = await res.json()
+      toast.error('Error', json.error ?? 'No se pudo marcar como respondido.')
+    }
+  }
+
   if (loading) {
     return <div className="flex items-center justify-center h-full py-20 text-gray-400">Cargando...</div>
   }
@@ -223,6 +647,12 @@ export default function LeadDetailPage({ params }: { params: { id: string } }) {
   const tasks = (lead.tasks as unknown[]) ?? []
   const activities = ((lead.activity_logs as unknown[]) ?? [])
     .sort((a, b) => new Date((b as Record<string,string>).created_at).getTime() - new Date((a as Record<string,string>).created_at).getTime())
+
+  // Secuencias: pasos pendientes overdue
+  const allPendingSteps = sequences.flatMap(s =>
+    (s.sequence_steps ?? []).filter(step => step.status === 'pending')
+  )
+  const overdueSteps = allPendingSteps.filter(step => isOverdue(step.scheduled_for))
 
   const tabs = [
     { id: 'info', label: 'Análisis IA', count: enrichment ? 1 : 0 },
@@ -244,6 +674,12 @@ export default function LeadDetailPage({ params }: { params: { id: string } }) {
             <Link href="/leads" className="btn-secondary text-xs py-1.5">
               <ArrowLeft className="w-3.5 h-3.5" /> Leads
             </Link>
+            <button
+              onClick={handleOpenEdit}
+              className="btn-secondary text-xs py-1.5"
+            >
+              <Pencil className="w-3.5 h-3.5" /> Editar
+            </button>
             <button
               onClick={() => setShowDeleteModal(true)}
               className="text-xs py-1.5 px-3 rounded-lg border border-red-200 text-red-600 hover:bg-red-50 transition-colors flex items-center gap-1.5"
@@ -279,6 +715,18 @@ export default function LeadDetailPage({ params }: { params: { id: string } }) {
                 </span>
               </div>
 
+              {/* Nombre del contacto */}
+              {((lead as Record<string, string>).first_name || (lead as Record<string, string>).last_name) && (
+                <div className="mb-3 pb-3 border-b border-gray-100">
+                  <p className="text-sm font-medium text-gray-800">
+                    {[(lead as Record<string, string>).first_name, (lead as Record<string, string>).last_name].filter(Boolean).join(' ')}
+                  </p>
+                  {(lead as Record<string, string>).department && (
+                    <p className="text-xs text-gray-400">{(lead as Record<string, string>).department}</p>
+                  )}
+                </div>
+              )}
+
               <div className="space-y-2.5 text-sm">
                 {(lead as Record<string, string>).website && (
                   <a href={(lead as Record<string, string>).website} target="_blank" rel="noopener noreferrer"
@@ -292,6 +740,11 @@ export default function LeadDetailPage({ params }: { params: { id: string } }) {
                   <div className="flex items-center gap-2 text-gray-600">
                     <Mail className="w-4 h-4 shrink-0 text-gray-400" />
                     <span className="truncate">{(lead as Record<string, string>).email}</span>
+                    {newsletterUnsubscribed && (
+                      <span className="text-[10px] bg-red-100 text-red-600 px-1.5 py-0.5 rounded font-medium shrink-0" title="Dado de baja de newsletter">
+                        NL baja
+                      </span>
+                    )}
                   </div>
                 )}
                 {(lead as Record<string, string>).phone && (
@@ -341,9 +794,118 @@ export default function LeadDetailPage({ params }: { params: { id: string } }) {
               </div>
             </div>
 
+            {/* Campañas del lead (many-to-many) */}
+            <div className="card p-4">
+              <div className="flex items-center justify-between mb-3">
+                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide flex items-center gap-1.5">
+                  <Megaphone className="w-3.5 h-3.5" /> Campañas
+                </p>
+                <button
+                  onClick={() => { setShowAddCampaign(v => !v); setSelectedCampaignId('') }}
+                  className="text-xs text-brand-600 hover:text-brand-700 flex items-center gap-1"
+                >
+                  <PlusCircle className="w-3.5 h-3.5" /> Añadir
+                </button>
+              </div>
+
+              {showAddCampaign && (
+                <div className="mb-3 flex gap-2">
+                  <select
+                    className="input text-xs py-1 flex-1"
+                    value={selectedCampaignId}
+                    onChange={e => setSelectedCampaignId(e.target.value)}
+                  >
+                    <option value="">Seleccionar campaña…</option>
+                    {allCampaigns
+                      .filter(c => !leadCampaigns.some(lc => lc.campaign_id === c.id))
+                      .map(c => (
+                        <option key={c.id} value={c.id}>{c.name}</option>
+                      ))
+                    }
+                  </select>
+                  <button
+                    onClick={handleAddCampaign}
+                    disabled={!selectedCampaignId || savingCampaign}
+                    className="btn-primary text-xs py-1 px-3"
+                  >
+                    {savingCampaign ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : 'OK'}
+                  </button>
+                </div>
+              )}
+
+              {leadCampaigns.length === 0 ? (
+                <p className="text-xs text-gray-400">Sin campañas asignadas.</p>
+              ) : (
+                <div className="space-y-1.5">
+                  {leadCampaigns.map(lc => (
+                    <div key={lc.campaign_id} className="flex items-center justify-between gap-2 rounded-lg bg-gray-50 px-2.5 py-1.5">
+                      <Link
+                        href={`/campaigns`}
+                        className="text-xs text-brand-700 hover:underline truncate font-medium"
+                      >
+                        {lc.campaign?.name ?? 'Campaña'}
+                      </Link>
+                      <button
+                        onClick={() => handleRemoveCampaign(lc.campaign_id)}
+                        disabled={removingCampaignId === lc.campaign_id}
+                        className="text-gray-300 hover:text-red-400 transition-colors shrink-0"
+                        title="Quitar de esta campaña"
+                      >
+                        {removingCampaignId === lc.campaign_id
+                          ? <Loader2 className="w-3 h-3 animate-spin" />
+                          : <XIcon className="w-3 h-3" />
+                        }
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Newsletter opt-out */}
+            {(lead as Record<string, string>).email && (
+              <div className="card p-4">
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide flex items-center gap-1.5">
+                    <BellOff className="w-3.5 h-3.5" /> Newsletter
+                  </p>
+                </div>
+                <div className={`flex items-center gap-2 p-2.5 rounded-lg text-xs mb-3 ${
+                  newsletterUnsubscribed
+                    ? 'bg-red-50 text-red-700 border border-red-100'
+                    : 'bg-green-50 text-green-700 border border-green-100'
+                }`}>
+                  {newsletterUnsubscribed
+                    ? <><UserX className="w-3.5 h-3.5 shrink-0" /> Dado de baja — no recibirá newsletters</>
+                    : <><UserCheck className="w-3.5 h-3.5 shrink-0" /> Activo — puede recibir newsletters</>
+                  }
+                </div>
+                <button
+                  onClick={handleToggleNewsletterOptOut}
+                  disabled={togglingUnsubscribe}
+                  className={`btn-secondary w-full justify-center text-xs ${
+                    newsletterUnsubscribed
+                      ? 'text-green-600 border-green-200 hover:bg-green-50'
+                      : 'text-red-600 border-red-200 hover:bg-red-50'
+                  }`}
+                >
+                  {togglingUnsubscribe
+                    ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    : newsletterUnsubscribed
+                      ? <><UserCheck className="w-3.5 h-3.5" /> Reactivar newsletter</>
+                      : <><UserX className="w-3.5 h-3.5" /> Dar de baja newsletter</>
+                  }
+                </button>
+              </div>
+            )}
+
             {/* Acciones rápidas */}
             <div className="card p-4 space-y-2">
               <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Acciones</p>
+              <button onClick={handleOpenEdit}
+                className="btn-secondary w-full justify-start text-xs">
+                <Pencil className="w-4 h-4" /> Editar lead
+              </button>
               <button onClick={() => setShowMessageModal(true)}
                 className="btn-secondary w-full justify-start text-xs">
                 <MessageSquare className="w-4 h-4" /> Generar mensaje
@@ -358,13 +920,40 @@ export default function LeadDetailPage({ params }: { params: { id: string } }) {
                 className="btn-secondary w-full justify-start text-xs">
                 <StickyNote className="w-4 h-4" /> Añadir nota
               </button>
-              {(lead as Record<string, string>).email && !(sequences as { status: string }[]).some(s => s.status === 'active') && (
+              {(lead as Record<string, string>).email ? (
+                (() => {
+                  const hasActive = sequences.some(s => s.status === 'active')
+                  return hasActive ? (
+                    <button
+                      onClick={() => setActiveTab('sequences')}
+                      className="btn-secondary w-full justify-start text-xs border-green-200 text-green-700 bg-green-50 hover:bg-green-100"
+                    >
+                      <Mails className="w-4 h-4" /> Secuencia activa · Ver →
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => setShowSequenceModal(true)}
+                      className="btn-primary w-full justify-start text-xs"
+                    >
+                      <Mails className="w-4 h-4" /> Iniciar secuencia 3 toques
+                    </button>
+                  )
+                })()
+              ) : (
                 <button
-                  onClick={() => setShowSequenceModal(true)}
-                  className="btn-primary w-full justify-start text-xs"
+                  disabled
+                  className="btn-secondary w-full justify-start text-xs opacity-40 cursor-not-allowed"
+                  title="Este lead no tiene email"
                 >
-                  <Mails className="w-4 h-4" /> Iniciar secuencia 3 toques
+                  <Mails className="w-4 h-4" /> Secuencia 3 toques
                 </button>
+              )}
+              {/* Aviso overdue */}
+              {overdueSteps.length > 0 && (
+                <div className="mt-1 p-2 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-700 flex items-center gap-1.5">
+                  <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                  {overdueSteps.length} paso{overdueSteps.length > 1 ? 's' : ''} pendiente{overdueSteps.length > 1 ? 's' : ''} de envío
+                </div>
               )}
             </div>
           </div>
@@ -560,16 +1149,44 @@ export default function LeadDetailPage({ params }: { params: { id: string } }) {
                   <div className="space-y-4">
                     <div className="flex items-center justify-between">
                       <p className="text-sm text-gray-600">{sequences.length} secuencia{sequences.length !== 1 ? 's' : ''}</p>
-                      {!(sequences as { status: string }[]).some(s => s.status === 'active') && (
-                        <button
-                          onClick={() => setShowSequenceModal(true)}
-                          className="btn-primary text-xs py-1.5"
-                          disabled={!(lead as Record<string, string>).email}
-                        >
-                          <Mails className="w-3.5 h-3.5" /> Iniciar secuencia 3 toques
-                        </button>
-                      )}
+                      <div className="flex gap-2">
+                        {/* Botón disparar envío ahora */}
+                        {overdueSteps.length > 0 && (
+                          <button
+                            onClick={handleTriggerNow}
+                            disabled={triggeringSequence}
+                            className="btn-primary text-xs py-1.5 bg-amber-500 hover:bg-amber-600 border-amber-500"
+                          >
+                            {triggeringSequence
+                              ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Enviando...</>
+                              : <><RefreshCw className="w-3.5 h-3.5" /> Enviar {overdueSteps.length} pendiente{overdueSteps.length > 1 ? 's' : ''} ahora</>
+                            }
+                          </button>
+                        )}
+                        {!sequences.some(s => s.status === 'active') && (
+                          <button
+                            onClick={() => setShowSequenceModal(true)}
+                            className="btn-primary text-xs py-1.5"
+                            disabled={!(lead as Record<string, string>).email}
+                          >
+                            <Mails className="w-3.5 h-3.5" /> Iniciar secuencia 3 toques
+                          </button>
+                        )}
+                      </div>
                     </div>
+
+                    {/* Resultado del disparo manual */}
+                    {triggerResult && (
+                      <div className={`p-3 rounded-xl text-xs border ${
+                        triggerResult.sent > 0 ? 'bg-green-50 border-green-200 text-green-800' :
+                        triggerResult.failed > 0 ? 'bg-red-50 border-red-200 text-red-800' :
+                        'bg-gray-50 border-gray-200 text-gray-700'
+                      }`}>
+                        <p className="font-medium mb-1">{triggerResult.message}</p>
+                        <p>Enviados: {triggerResult.sent} · Omitidos: {triggerResult.skipped} · Fallidos: {triggerResult.failed}</p>
+                      </div>
+                    )}
+
                     {!(lead as Record<string, string>).email && (
                       <p className="text-xs text-amber-600 bg-amber-50 p-3 rounded-lg">
                         ⚠ Este lead no tiene email. Añade uno para poder enviar secuencias.
@@ -582,10 +1199,8 @@ export default function LeadDetailPage({ params }: { params: { id: string } }) {
                         <p className="text-xs text-gray-400">Una secuencia envía 3 emails automáticos: día 1, día 5 y día 10</p>
                       </div>
                     )}
-                    {(sequences as {
-                      id: string; name: string; status: string; current_step: number;
-                      created_at: string; sequence_steps?: { step_number: number; status: string; subject: string; scheduled_for?: string; sent_at?: string }[]
-                    }[]).map(seq => (
+
+                    {sequences.map(seq => (
                       <div key={seq.id} className="border border-gray-200 rounded-xl p-4">
                         <div className="flex items-center justify-between mb-3">
                           <div>
@@ -605,51 +1220,182 @@ export default function LeadDetailPage({ params }: { params: { id: string } }) {
                             </span>
                             {seq.status === 'active' && (
                               <button onClick={() => handleSequenceAction(seq.id, 'pause')}
-                                className="btn-secondary text-xs py-1 px-2">
+                                className="btn-secondary text-xs py-1 px-2" title="Pausar">
                                 <Pause className="w-3 h-3" />
+                              </button>
+                            )}
+                            {seq.status === 'active' && (
+                              <button
+                                onClick={() => handleMarkReplied(seq.id)}
+                                className="btn-secondary text-xs py-1 px-2 text-green-600 border-green-200 hover:bg-green-50"
+                                title="El lead ha respondido — cancela los emails pendientes"
+                              >
+                                <CheckCircle2 className="w-3 h-3" />
+                                <span className="ml-1">Respondió</span>
                               </button>
                             )}
                             {seq.status === 'paused' && (
                               <button onClick={() => handleSequenceAction(seq.id, 'resume')}
-                                className="btn-secondary text-xs py-1 px-2">
+                                className="btn-secondary text-xs py-1 px-2" title="Reanudar">
                                 <Play className="w-3 h-3" />
                               </button>
                             )}
+                            {/* Botón Reiniciar — visible cuando está pausada, completada o cancelada */}
+                            {(seq.status === 'paused' || seq.status === 'completed' || seq.status === 'cancelled') && (
+                              <button
+                                onClick={() => handleRestartSequence(seq.id)}
+                                disabled={restartingSeqId === seq.id}
+                                className="btn-secondary text-xs py-1 px-2 text-amber-600 border-amber-200 hover:bg-amber-50"
+                                title="Reiniciar secuencia desde el principio"
+                              >
+                                {restartingSeqId === seq.id
+                                  ? <Loader2 className="w-3 h-3 animate-spin" />
+                                  : <RotateCcw className="w-3 h-3" />
+                                }
+                              </button>
+                            )}
+                            {/* Botón Borrar — siempre visible */}
+                            <button
+                              onClick={() => handleDeleteSequence(seq.id)}
+                              className="btn-secondary text-xs py-1 px-2 text-red-500 border-red-200 hover:bg-red-50"
+                              title="Borrar secuencia definitivamente"
+                            >
+                              <Trash2 className="w-3 h-3" />
+                            </button>
                           </div>
                         </div>
-                        {/* Pasos */}
+
+                        {/* Pasos con diagnóstico */}
                         <div className="space-y-2">
                           {(seq.sequence_steps ?? [])
                             .sort((a, b) => a.step_number - b.step_number)
-                            .map(step => (
-                              <div key={step.step_number} className={`flex items-center gap-3 p-2.5 rounded-lg ${
-                                step.status === 'sent' ? 'bg-green-50' :
-                                step.status === 'skipped' ? 'bg-gray-50 opacity-60' :
-                                'bg-brand-50'
-                              }`}>
-                                <div className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 text-xs font-bold ${
-                                  step.status === 'sent' ? 'bg-green-500 text-white' :
-                                  step.status === 'skipped' ? 'bg-gray-300 text-white' :
-                                  'bg-brand-200 text-brand-700'
+                            .map(step => {
+                              const isExpanded = expandedStep === step.id
+                              const edits = stepEdits[step.id]
+                              const canEdit = step.status !== 'sent' && step.status !== 'skipped'
+                              const overdue = step.status === 'pending' && isOverdue(step.scheduled_for)
+                              const mins = step.status === 'pending' ? minutesUntil(step.scheduled_for) : null
+                              return (
+                                <div key={step.id ?? step.step_number} className={`rounded-xl border transition-all ${
+                                  step.status === 'sent' ? 'border-green-200 bg-green-50' :
+                                  step.status === 'skipped' ? 'border-gray-200 bg-gray-50 opacity-60' :
+                                  overdue ? 'border-amber-300 bg-amber-50' :
+                                  isExpanded ? 'border-brand-300 bg-brand-50' : 'border-gray-200 bg-white'
                                 }`}>
-                                  {step.status === 'sent' ? '✓' : step.step_number}
+                                  {/* Cabecera del paso */}
+                                  <div
+                                    className={`flex items-center gap-3 p-3 ${canEdit ? 'cursor-pointer' : ''}`}
+                                    onClick={() => canEdit && step.id && handleExpandStep(step)}
+                                  >
+                                    <div className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 text-xs font-bold ${
+                                      step.status === 'sent' ? 'bg-green-500 text-white' :
+                                      step.status === 'skipped' ? 'bg-gray-300 text-white' :
+                                      overdue ? 'bg-amber-400 text-white' :
+                                      'bg-brand-200 text-brand-700'
+                                    }`}>
+                                      {step.status === 'sent' ? '✓' : overdue ? '!' : step.step_number}
+                                    </div>
+                                    <div className="flex-1 min-w-0">
+                                      <p className="text-xs font-medium text-gray-800 truncate">{step.subject}</p>
+                                      <p className={`text-xs flex items-center gap-1 mt-0.5 ${overdue ? 'text-amber-600 font-medium' : 'text-gray-400'}`}>
+                                        {step.status === 'sent' && step.sent_at ? (
+                                          <><CheckCircle2 className="w-3 h-3 text-green-500" /> Enviado {formatDateRelative(step.sent_at)}</>
+                                        ) : step.status === 'skipped' ? (
+                                          <>Omitido</>
+                                        ) : overdue ? (
+                                          <><AlertTriangle className="w-3 h-3" /> Pendiente desde {formatDateRelative(step.scheduled_for!)}</>
+                                        ) : mins !== null && mins > 0 ? (
+                                          <><Clock className="w-3 h-3" /> En {mins < 60 ? `${mins} min` : `${Math.round(mins/60)}h`} · {formatDate(step.scheduled_for!)}</>
+                                        ) : (
+                                          <><CalendarClock className="w-3 h-3" /> {step.scheduled_for ? formatDate(step.scheduled_for) : 'Pendiente'}</>
+                                        )}
+                                      </p>
+                                    </div>
+                                    {step.status === 'sent' ? (
+                                      <CheckCircle2 className="w-4 h-4 text-green-500 shrink-0" />
+                                    ) : overdue ? (
+                                      <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0" />
+                                    ) : canEdit ? (
+                                      isExpanded
+                                        ? <ChevronUp className="w-4 h-4 text-gray-400 shrink-0" />
+                                        : <ChevronDown className="w-4 h-4 text-gray-400 shrink-0" />
+                                    ) : null}
+                                  </div>
+
+                                  {/* Editor expandido */}
+                                  {isExpanded && edits && (
+                                    <div className="px-3 pb-3 space-y-3 border-t border-brand-200 pt-3">
+                                      <div>
+                                        <label className="label text-xs">Asunto</label>
+                                        <input
+                                          className="input text-sm"
+                                          value={edits.subject}
+                                          onChange={e => setStepEdits(prev => ({
+                                            ...prev,
+                                            [step.id]: { ...prev[step.id], subject: e.target.value }
+                                          }))}
+                                        />
+                                      </div>
+                                      <div>
+                                        <label className="label text-xs">Cuerpo del email</label>
+                                        <textarea
+                                          className="input resize-y text-sm"
+                                          rows={6}
+                                          value={edits.body}
+                                          onChange={e => setStepEdits(prev => ({
+                                            ...prev,
+                                            [step.id]: { ...prev[step.id], body: e.target.value }
+                                          }))}
+                                        />
+                                      </div>
+                                      <div>
+                                        <label className="label text-xs flex items-center gap-1">
+                                          <CalendarClock className="w-3.5 h-3.5" /> Fecha y hora de envío
+                                        </label>
+                                        <input
+                                          type="datetime-local"
+                                          className="input text-sm"
+                                          value={edits.scheduled_for}
+                                          onChange={e => setStepEdits(prev => ({
+                                            ...prev,
+                                            [step.id]: { ...prev[step.id], scheduled_for: e.target.value }
+                                          }))}
+                                        />
+                                        <p className="text-xs text-gray-400 mt-1">
+                                          Deja una fecha pasada para que se envíe en el próximo cron o usa &quot;Enviar ahora&quot;
+                                        </p>
+                                      </div>
+                                      <div className="flex gap-2 pt-1">
+                                        <button
+                                          onClick={() => setExpandedStep(null)}
+                                          className="btn-secondary text-xs py-1.5"
+                                        >
+                                          Cancelar
+                                        </button>
+                                        <button
+                                          onClick={() => handleSaveStep(step.id)}
+                                          disabled={savingStep === step.id}
+                                          className="btn-primary text-xs py-1.5"
+                                        >
+                                          {savingStep === step.id
+                                            ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Guardando...</>
+                                            : <><Save className="w-3.5 h-3.5" /> Guardar cambios</>
+                                          }
+                                        </button>
+                                      </div>
+                                    </div>
+                                  )}
                                 </div>
-                                <div className="flex-1 min-w-0">
-                                  <p className="text-xs font-medium text-gray-800 truncate">{step.subject}</p>
-                                  <p className="text-xs text-gray-400">
-                                    {step.status === 'sent' && step.sent_at ? `Enviado ${formatDateRelative(step.sent_at)}` :
-                                     step.status === 'skipped' ? 'Omitido' :
-                                     step.scheduled_for ? `Programado: ${formatDate(step.scheduled_for)}` : 'Pendiente'}
-                                  </p>
-                                </div>
-                                {step.status === 'sent' ? (
-                                  <CheckCircle2 className="w-4 h-4 text-green-500 shrink-0" />
-                                ) : step.status === 'pending' ? (
-                                  <Clock className="w-4 h-4 text-brand-400 shrink-0" />
-                                ) : null}
-                              </div>
-                            ))}
+                              )
+                            })}
                         </div>
+
+                        {/* Nota informativa cron */}
+                        <p className="text-xs text-gray-400 mt-3 flex items-center gap-1">
+                          <Clock className="w-3 h-3" />
+                          Los emails se envían automáticamente cada día a las 9:00.
+                          Usa el botón &quot;Enviar pendientes ahora&quot; para forzar el envío.
+                        </p>
                       </div>
                     ))}
                   </div>
@@ -684,63 +1430,335 @@ export default function LeadDetailPage({ params }: { params: { id: string } }) {
         </div>
       </div>
 
-      {/* Modal: Generar mensaje */}
-      <Modal isOpen={showMessageModal} onClose={() => { setShowMessageModal(false); setGeneratedMsg(null) }}
-        title="Generar mensaje con IA" size="lg">
+      {/* ─── Modal: Editar lead ─── */}
+      <Modal isOpen={showEditModal} onClose={() => setShowEditModal(false)} title="Editar lead" size="lg">
         <div className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
+            <div className="col-span-2">
+              <label className="label">Empresa *</label>
+              <input className="input" value={editForm.company_name ?? ''} onChange={e => setEditForm(f => ({ ...f, company_name: e.target.value }))} placeholder="Nombre de la empresa" />
+            </div>
             <div>
-              <label className="label">Tipo de mensaje</label>
-              <select className="input" value={msgType} onChange={e => setMsgType(e.target.value)}>
-                {MESSAGE_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+              <label className="label">Nombre</label>
+              <input className="input" value={editForm.first_name ?? ''} onChange={e => setEditForm(f => ({ ...f, first_name: e.target.value }))} placeholder="Nombre del contacto" />
+            </div>
+            <div>
+              <label className="label">Apellidos</label>
+              <input className="input" value={editForm.last_name ?? ''} onChange={e => setEditForm(f => ({ ...f, last_name: e.target.value }))} placeholder="Apellidos" />
+            </div>
+            <div>
+              <label className="label">Departamento</label>
+              <input className="input" value={editForm.department ?? ''} onChange={e => setEditForm(f => ({ ...f, department: e.target.value }))} placeholder="Ej: Marketing, Ventas, Dirección..." />
+            </div>
+            <div>
+              <label className="label">Cargo</label>
+              <input className="input" value={editForm.job_title ?? ''} onChange={e => setEditForm(f => ({ ...f, job_title: e.target.value }))} placeholder="Ej: CEO, Brand Manager, Director..." />
+            </div>
+            <div>
+              <label className="label">Email</label>
+              <input className="input" type="email" value={editForm.email ?? ''} onChange={e => setEditForm(f => ({ ...f, email: e.target.value }))} placeholder="contacto@empresa.com" />
+            </div>
+            <div>
+              <label className="label">Teléfono</label>
+              <input className="input" value={editForm.phone ?? ''} onChange={e => setEditForm(f => ({ ...f, phone: e.target.value }))} placeholder="+34 000 000 000" />
+            </div>
+            <div>
+              <label className="label">Web</label>
+              <input className="input" value={editForm.website ?? ''} onChange={e => setEditForm(f => ({ ...f, website: e.target.value }))} placeholder="https://empresa.com" />
+            </div>
+            <div>
+              <label className="label">País</label>
+              <input className="input" value={editForm.country ?? ''} onChange={e => setEditForm(f => ({ ...f, country: e.target.value }))} placeholder="España" />
+            </div>
+            <div>
+              <label className="label">Ciudad</label>
+              <input className="input" value={editForm.city ?? ''} onChange={e => setEditForm(f => ({ ...f, city: e.target.value }))} placeholder="Madrid" />
+            </div>
+            <div>
+              <label className="label">Sector</label>
+              <input className="input" value={editForm.sector ?? ''} onChange={e => setEditForm(f => ({ ...f, sector: e.target.value }))} placeholder="Retail, Hostelería..." />
+            </div>
+            <div className="col-span-2">
+              <label className="label">LinkedIn</label>
+              <input className="input" value={editForm.linkedin_url ?? ''} onChange={e => setEditForm(f => ({ ...f, linkedin_url: e.target.value }))} placeholder="https://linkedin.com/in/..." />
+            </div>
+            <div>
+              <label className="label">Estado</label>
+              <select className="input" value={editForm.status ?? 'new'} onChange={e => setEditForm(f => ({ ...f, status: e.target.value }))}>
+                {STATUSES.map(s => <option key={s} value={s}>{statusLabel(s)}</option>)}
               </select>
             </div>
+            <div>
+              <label className="label">Prioridad</label>
+              <select className="input" value={editForm.priority ?? 'medium'} onChange={e => setEditForm(f => ({ ...f, priority: e.target.value }))}>
+                {PRIORITIES.map(p => <option key={p} value={p}>{p}</option>)}
+              </select>
+            </div>
+            <div className="col-span-2">
+              <label className="label">Descripción / Notas internas</label>
+              <textarea className="input resize-y" rows={3} value={editForm.description ?? ''} onChange={e => setEditForm(f => ({ ...f, description: e.target.value }))} placeholder="Descripción del lead, notas de la empresa..." />
+            </div>
+          </div>
+          <div className="flex gap-2 justify-end pt-2">
+            <button onClick={() => setShowEditModal(false)} className="btn-secondary text-xs">Cancelar</button>
+            <button
+              onClick={handleSaveEdit}
+              disabled={savingEdit || !editForm.company_name?.trim()}
+              className="btn-primary text-xs"
+            >
+              {savingEdit ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Guardando...</> : <><Save className="w-3.5 h-3.5" /> Guardar cambios</>}
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Modal: Generar / Mejorar mensaje */}
+      <Modal isOpen={showMessageModal} onClose={() => {
+        setShowMessageModal(false)
+        setGeneratedMsg(null)
+        setImprovedMsg(null)
+        setUserDraft('')
+        setImproveInstructions('')
+      }} title="Mensajes con IA" size="lg">
+        <div className="space-y-4">
+
+          {/* Selector de pestañas */}
+          <div className="flex gap-1 p-1 bg-gray-100 rounded-xl">
+            <button
+              onClick={() => { setMsgTab('generate'); setGeneratedMsg(null) }}
+              className={`flex-1 flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg text-xs font-medium transition-all ${
+                msgTab === 'generate' ? 'bg-white shadow text-gray-900' : 'text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              <Sparkles className="w-3.5 h-3.5" /> Generar con IA
+            </button>
+            <button
+              onClick={() => { setMsgTab('improve'); setImprovedMsg(null) }}
+              className={`flex-1 flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg text-xs font-medium transition-all ${
+                msgTab === 'improve' ? 'bg-white shadow text-gray-900' : 'text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              <PenLine className="w-3.5 h-3.5" /> Mejorar mi borrador
+            </button>
+          </div>
+
+          {/* Tono (compartido por los dos modos) */}
+          <div className={`grid gap-4 ${msgTab === 'generate' ? 'grid-cols-2' : 'grid-cols-1'}`}>
+            {msgTab === 'generate' && (
+              <div>
+                <label className="label">Tipo de mensaje</label>
+                <select className="input" value={msgType} onChange={e => setMsgType(e.target.value)}>
+                  {MESSAGE_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+                </select>
+              </div>
+            )}
             <div>
               <label className="label">Tono</label>
               <select className="input" value={msgTone} onChange={e => setMsgTone(e.target.value)}>
                 {TONES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
               </select>
             </div>
+            <div>
+              <label className="label">Emojis</label>
+              <button
+                type="button"
+                onClick={() => setMsgEmojis(v => !v)}
+                className={`flex items-center gap-2 px-3 py-2 rounded-xl border-2 text-sm font-medium transition-all w-full ${
+                  msgEmojis
+                    ? 'border-brand-500 bg-brand-50 text-brand-700'
+                    : 'border-gray-200 bg-white text-gray-500 hover:border-gray-300'
+                }`}
+              >
+                <span className="text-base">{msgEmojis ? '😊' : '🚫'}</span>
+                {msgEmojis ? 'Con emojis' : 'Sin emojis'}
+              </button>
+            </div>
           </div>
 
-          {generatedMsg ? (
-            <div className="space-y-3">
-              {generatedMsg.subject && (
-                <div>
-                  <label className="label">Asunto</label>
-                  <input className="input" value={generatedMsg.subject}
-                    onChange={e => setGeneratedMsg(prev => prev ? {...prev, subject: e.target.value} : null)} />
+          {/* ── PESTAÑA: GENERAR CON IA ── */}
+          {msgTab === 'generate' && (
+            <>
+              {generatedMsg ? (
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs font-semibold text-green-700 bg-green-50 px-2 py-1 rounded-lg flex items-center gap-1">
+                      <Check className="w-3 h-3" /> Mensaje generado — edítalo antes de usar
+                    </p>
+                    <button
+                      onClick={() => handleCopyMsg(
+                        (generatedMsg.subject ? `${generatedMsg.subject}\n\n` : '') + generatedMsg.body,
+                        setCopiedMsg
+                      )}
+                      className="btn-secondary text-xs py-1 px-2"
+                    >
+                      {copiedMsg ? <><Check className="w-3 h-3 text-green-500" /> Copiado</> : <><Copy className="w-3 h-3" /> Copiar</>}
+                    </button>
+                  </div>
+                  {generatedMsg.subject && (
+                    <div>
+                      <label className="label">Asunto</label>
+                      <input className="input" value={generatedMsg.subject}
+                        onChange={e => setGeneratedMsg(prev => prev ? {...prev, subject: e.target.value} : null)} />
+                    </div>
+                  )}
+                  <div>
+                    <label className="label">Cuerpo del mensaje <span className="text-gray-400 font-normal">(editable)</span></label>
+                    <Suspense fallback={
+                      <textarea className="input resize-y w-full" rows={9} value={generatedMsg.body}
+                        onChange={e => setGeneratedMsg(prev => prev ? {...prev, body: e.target.value} : null)} />
+                    }>
+                      <RichTextEditor
+                        value={generatedMsg.body}
+                        onChange={body => setGeneratedMsg(prev => prev ? {...prev, body} : null)}
+                        placeholder="Cuerpo del mensaje..."
+                        minHeight={180}
+                      />
+                    </Suspense>
+                  </div>
+                  <div className="flex gap-2 flex-wrap">
+                    <button onClick={handleGenerateMessage} disabled={generatingMsg} className="btn-secondary text-xs">
+                      <Zap className="w-3.5 h-3.5" /> Regenerar
+                    </button>
+                    {(lead as Record<string, string>).email && (
+                      <button
+                        onClick={() => {
+                          setEmailSubject(generatedMsg.subject || '')
+                          setEmailBody(generatedMsg.body)
+                          setShowMessageModal(false)
+                          setGeneratedMsg(null)
+                          setShowSendEmailModal(true)
+                        }}
+                        className="btn-primary text-xs"
+                      >
+                        <Send className="w-3.5 h-3.5" /> Enviar email
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <div className="text-center py-4">
+                  <p className="text-xs text-gray-500 mb-4">
+                    La IA generará un mensaje personalizado usando el análisis de la empresa.
+                    Podrás editarlo antes de enviarlo.
+                  </p>
+                  <button onClick={handleGenerateMessage} disabled={generatingMsg} className="btn-primary w-full justify-center">
+                    {generatingMsg
+                      ? <><Loader2 className="w-4 h-4 animate-spin" /> Generando con IA...</>
+                      : <><Sparkles className="w-4 h-4" /> Generar mensaje</>
+                    }
+                  </button>
                 </div>
               )}
-              <div>
-                <label className="label">Mensaje</label>
-                <textarea className="input resize-none" rows={8} value={generatedMsg.body}
-                  onChange={e => setGeneratedMsg(prev => prev ? {...prev, body: e.target.value} : null)} />
-              </div>
-              <div className="flex gap-2">
-                <button onClick={handleGenerateMessage} disabled={generatingMsg}
-                  className="btn-secondary text-xs">Regenerar</button>
-                {(lead as Record<string, string>).email && (
-                  <button
-                    onClick={() => {
-                      setEmailSubject(generatedMsg.subject || '')
-                      setEmailBody(generatedMsg.body)
-                      setShowMessageModal(false)
-                      setGeneratedMsg(null)
-                      setShowSendEmailModal(true)
-                    }}
-                    className="btn-primary text-xs"
-                  >
-                    <Send className="w-3.5 h-3.5" /> Usar para enviar email
-                  </button>
-                )}
-              </div>
-            </div>
-          ) : (
-            <button onClick={handleGenerateMessage} disabled={generatingMsg} className="btn-primary w-full justify-center">
-              <Zap className="w-4 h-4" /> {generatingMsg ? 'Generando con IA...' : 'Generar mensaje'}
-            </button>
+            </>
           )}
+
+          {/* ── PESTAÑA: MEJORAR BORRADOR ── */}
+          {msgTab === 'improve' && (
+            <>
+              {!improvedMsg ? (
+                <div className="space-y-3">
+                  <div>
+                    <label className="label">Tu borrador <span className="text-gray-400 font-normal">— admite formato, imágenes y enlaces</span></label>
+                    <Suspense fallback={
+                      <textarea
+                        className="input resize-y"
+                        rows={7}
+                        placeholder="Escribe tu mensaje aquí..."
+                        value={userDraft}
+                        onChange={e => setUserDraft(e.target.value)}
+                      />
+                    }>
+                      <RichTextEditor
+                        value={userDraft}
+                        onChange={setUserDraft}
+                        placeholder="Escribe tu borrador aquí — la IA lo mejorará manteniendo tu estilo y estructura"
+                        minHeight={180}
+                      />
+                    </Suspense>
+                  </div>
+                  <div>
+                    <label className="label">Instrucciones para la IA <span className="text-gray-400 font-normal">(opcional)</span></label>
+                    <input
+                      className="input"
+                      placeholder="Ej: hazlo más corto, añade un CTA más claro, menciona el packaging..."
+                      value={improveInstructions}
+                      onChange={e => setImproveInstructions(e.target.value)}
+                    />
+                  </div>
+                  <button
+                    onClick={handleImproveMessage}
+                    disabled={improvingMsg || !userDraft.replace(/<[^>]+>/g, '').trim()}
+                    className="btn-primary w-full justify-center"
+                  >
+                    {improvingMsg
+                      ? <><Loader2 className="w-4 h-4 animate-spin" /> Mejorando con IA...</>
+                      : <><Sparkles className="w-4 h-4" /> Mejorar con IA</>
+                    }
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs font-semibold text-brand-700 bg-brand-50 px-2 py-1 rounded-lg flex items-center gap-1">
+                      <Sparkles className="w-3 h-3" /> Borrador mejorado — edítalo si quieres
+                    </p>
+                    <button
+                      onClick={() => handleCopyMsg(
+                        (improvedMsg.subject ? `${improvedMsg.subject}\n\n` : '') + improvedMsg.body,
+                        setCopiedImproved
+                      )}
+                      className="btn-secondary text-xs py-1 px-2"
+                    >
+                      {copiedImproved ? <><Check className="w-3 h-3 text-green-500" /> Copiado</> : <><Copy className="w-3 h-3" /> Copiar</>}
+                    </button>
+                  </div>
+                  {improvedMsg.subject && (
+                    <div>
+                      <label className="label">Asunto</label>
+                      <input className="input" value={improvedMsg.subject}
+                        onChange={e => setImprovedMsg(prev => prev ? {...prev, subject: e.target.value} : null)} />
+                    </div>
+                  )}
+                  <div>
+                    <label className="label">Mensaje mejorado <span className="text-gray-400 font-normal">(editable — admite imágenes y enlaces)</span></label>
+                    <Suspense fallback={
+                      <textarea className="input resize-y" rows={9} value={improvedMsg.body}
+                        onChange={e => setImprovedMsg(prev => prev ? {...prev, body: e.target.value} : null)} />
+                    }>
+                      <RichTextEditor
+                        value={improvedMsg.body}
+                        onChange={v => setImprovedMsg(prev => prev ? {...prev, body: v} : null)}
+                        minHeight={220}
+                      />
+                    </Suspense>
+                  </div>
+                  <div className="flex gap-2 flex-wrap">
+                    <button onClick={() => setImprovedMsg(null)} className="btn-secondary text-xs">
+                      <Edit2 className="w-3.5 h-3.5" /> Editar borrador
+                    </button>
+                    <button onClick={handleImproveMessage} disabled={improvingMsg} className="btn-secondary text-xs">
+                      <Sparkles className="w-3.5 h-3.5" /> Mejorar de nuevo
+                    </button>
+                    {(lead as Record<string, string>).email && (
+                      <button
+                        onClick={() => {
+                          setEmailSubject(improvedMsg.subject || '')
+                          setEmailBody(improvedMsg.body)
+                          setShowMessageModal(false)
+                          setImprovedMsg(null)
+                          setShowSendEmailModal(true)
+                        }}
+                        className="btn-primary text-xs"
+                      >
+                        <Send className="w-3.5 h-3.5" /> Enviar email
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+
         </div>
       </Modal>
 
@@ -789,9 +1807,24 @@ export default function LeadDetailPage({ params }: { params: { id: string } }) {
           <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-amber-700 text-xs">
             ⚠️ Revisa el mensaje antes de enviar. Los emails enviados quedan registrados.
           </div>
-          <div>
-            <label className="label">Para</label>
-            <input className="input bg-gray-50" value={(lead as Record<string, string>).email || ''} readOnly />
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="label">De (cuenta de envío)</label>
+              <select
+                className="input text-sm"
+                value={emailFromAccount}
+                onChange={e => setEmailFromAccount(e.target.value)}
+              >
+                <option value="guillaume@mymediaconnect.com">Guillaume — MyMediaConnect</option>
+                <option value="guillaume@gomymediaconnect.com">Guillaume — MyMediaConnect (gomymediaconnect)</option>
+                <option value="guillaume@mymediaconnectgo.com">Guillaume — MyMediaConnect (mymediaconnectgo)</option>
+                <option value="guillaume@mymediaconnect.es">Guillaume — MyMediaConnect (mymediaconnect.es)</option>
+              </select>
+            </div>
+            <div>
+              <label className="label">Para</label>
+              <input className="input bg-gray-50" value={(lead as Record<string, string>).email || ''} readOnly />
+            </div>
           </div>
           <div>
             <label className="label">Asunto *</label>
@@ -800,8 +1833,17 @@ export default function LeadDetailPage({ params }: { params: { id: string } }) {
           </div>
           <div>
             <label className="label">Mensaje *</label>
-            <textarea className="input resize-none" rows={8} value={emailBody}
-              onChange={e => setEmailBody(e.target.value)} placeholder="Cuerpo del email..." />
+            <Suspense fallback={
+              <textarea className="input resize-none w-full" rows={8} value={emailBody}
+                onChange={e => setEmailBody(e.target.value)} placeholder="Cuerpo del email..." />
+            }>
+              <RichTextEditor
+                value={emailBody}
+                onChange={setEmailBody}
+                placeholder="Cuerpo del email..."
+                minHeight={200}
+              />
+            </Suspense>
           </div>
           <div className="flex gap-2 justify-end">
             <button onClick={() => setShowSendEmailModal(false)} className="btn-secondary text-xs">Cancelar</button>
@@ -815,39 +1857,182 @@ export default function LeadDetailPage({ params }: { params: { id: string } }) {
           </div>
         </div>
       </Modal>
-      {/* Modal: Iniciar secuencia */}
-      <Modal isOpen={showSequenceModal} onClose={() => setShowSequenceModal(false)} title="Iniciar secuencia 3 toques">
-        <div className="space-y-4">
-          <div className="p-4 bg-brand-50 border border-brand-100 rounded-xl text-sm text-brand-800 space-y-2">
-            <p className="font-medium">¿Cómo funciona la secuencia?</p>
-            <ul className="text-xs space-y-1 text-brand-700">
-              <li>📧 <strong>Día 1</strong> — Email inicial personalizado con IA</li>
-              <li>📧 <strong>Día 5</strong> — Follow-up si no ha contestado</li>
-              <li>📧 <strong>Día 10</strong> — Último intento de contacto</li>
-            </ul>
-            <p className="text-xs text-brand-600 mt-2">
-              Los emails se generan ahora con IA y se envían automáticamente cada día a las 9:00.
-              Si el lead contesta, la secuencia se pausa automáticamente.
-            </p>
+
+      {/* Modal: Iniciar secuencia — 2 pasos: info → preview/edición → confirmar */}
+      <Modal
+        isOpen={showSequenceModal}
+        onClose={() => { setShowSequenceModal(false); setSeqModalStep('info'); setPreviewSteps([]) }}
+        title={seqModalStep === 'info' ? 'Iniciar secuencia 3 toques' : 'Revisar emails antes de enviar'}
+        size="lg"
+      >
+        {seqModalStep === 'info' ? (
+          <div className="space-y-4">
+            <div className="p-4 bg-brand-50 border border-brand-100 rounded-xl text-sm text-brand-800 space-y-2">
+              <p className="font-medium">¿Cómo funciona la secuencia?</p>
+              <ul className="text-xs space-y-1 text-brand-700">
+                <li>📧 <strong>Email 1</strong> — Se programa para mañana a las 9:00 (o cuando elijas)</li>
+                <li>📧 <strong>Email 2</strong> — Se programa automáticamente 5 días después</li>
+                <li>📧 <strong>Email 3</strong> — Se programa automáticamente 10 días después</li>
+              </ul>
+              <p className="text-xs text-brand-600 mt-2">
+                La IA generará los 3 emails personalizados. Podrás revisarlos, editarlos y ajustar la fecha de envío de cada uno.
+                Si el lead contesta, la secuencia se pausa automáticamente.
+              </p>
+            </div>
+            <div className="p-3 bg-gray-50 rounded-lg text-xs text-gray-600 space-y-2">
+              <div><strong>Destinatario:</strong> {(lead as Record<string, string>).email}</div>
+              <div className="flex items-center gap-2 pt-1">
+                <label className="font-medium text-gray-700 shrink-0">Idioma de los emails:</label>
+                <select
+                  value={seqLanguage}
+                  onChange={e => setSeqLanguage(e.target.value)}
+                  className="input text-xs py-1 px-2 h-7"
+                >
+                  <option value="es">🇪🇸 Español</option>
+                  <option value="en">🇬🇧 English</option>
+                  <option value="fr">🇫🇷 Français</option>
+                  <option value="de">🇩🇪 Deutsch</option>
+                  <option value="it">🇮🇹 Italiano</option>
+                  <option value="pt">🇵🇹 Português</option>
+                  <option value="nl">🇳🇱 Nederlands</option>
+                  <option value="ca">🏴 Català</option>
+                  <option value="eu">🏴 Euskera</option>
+                </select>
+              </div>
+            </div>
+            <div className="flex gap-2 justify-end">
+              <button onClick={() => { setShowSequenceModal(false); setSeqModalStep('info') }} className="btn-secondary text-xs">Cancelar</button>
+              <button
+                onClick={handleGeneratePreview}
+                disabled={generatingPreview}
+                className="btn-primary text-xs"
+              >
+                {generatingPreview ? (
+                  <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Generando con IA...</>
+                ) : (
+                  <><Sparkles className="w-3.5 h-3.5" /> Generar y revisar emails</>
+                )}
+              </button>
+            </div>
           </div>
-          <div className="p-3 bg-gray-50 rounded-lg text-xs text-gray-600">
-            <strong>Destinatario:</strong> {(lead as Record<string, string>).email}
+        ) : (
+          <div className="space-y-4">
+            <div className="p-3 bg-brand-50 border border-brand-100 rounded-lg text-xs text-brand-800 flex items-start gap-2">
+              <span className="text-base">✏️</span>
+              <span>Revisa y edita los emails. Puedes ajustar el <strong>asunto, cuerpo y fecha de envío</strong> de cada email. Los 3 emails se enviarán automáticamente vía cron cuando llegue su fecha.</span>
+            </div>
+
+            {/* Lista de emails editables */}
+            <div className="space-y-2">
+              {previewSteps.map(step => (
+                <div key={step.step_number} className={`border rounded-xl overflow-hidden transition-all ${
+                  expandedPreviewStep === step.step_number ? 'border-brand-300' : 'border-gray-200'
+                }`}>
+                  {/* Cabecera del paso */}
+                  <button
+                    className="w-full flex items-center gap-3 p-3 text-left hover:bg-gray-50 transition-colors"
+                    onClick={() => setExpandedPreviewStep(expandedPreviewStep === step.step_number ? 0 : step.step_number)}
+                  >
+                    <div className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 text-xs font-bold ${
+                      step.step_number === 1 ? 'bg-green-500 text-white' : 'bg-brand-200 text-brand-700'
+                    }`}>
+                      {step.step_number}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <p className="text-xs font-semibold text-gray-700">{step.label}</p>
+                        {step.scheduled_for && (
+                          <span className="text-xs text-brand-600 bg-brand-50 px-1.5 py-0.5 rounded font-medium shrink-0">
+                            {new Date(step.scheduled_for).toLocaleDateString('es-ES', { day: 'numeric', month: 'short' })}
+                            {' '}
+                            {new Date(step.scheduled_for).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-xs text-gray-500 truncate">{step.subject}</p>
+                    </div>
+                    {expandedPreviewStep === step.step_number
+                      ? <ChevronUp className="w-4 h-4 text-gray-400 shrink-0" />
+                      : <ChevronDown className="w-4 h-4 text-gray-400 shrink-0" />
+                    }
+                  </button>
+
+                  {/* Editor expandido */}
+                  {expandedPreviewStep === step.step_number && (
+                    <div className="px-3 pb-3 space-y-2 border-t border-gray-100 pt-3 bg-gray-50/50">
+                      <div>
+                        <label className="label text-xs">Asunto</label>
+                        <input
+                          className="input text-sm"
+                          value={step.subject}
+                          onChange={e => setPreviewSteps(prev => prev.map(s =>
+                            s.step_number === step.step_number ? { ...s, subject: e.target.value } : s
+                          ))}
+                        />
+                      </div>
+                      <div>
+                        <label className="label text-xs">Cuerpo del email</label>
+                        <textarea
+                          className="input resize-y text-sm font-mono text-xs leading-relaxed"
+                          rows={8}
+                          value={step.body}
+                          onChange={e => setPreviewSteps(prev => prev.map(s =>
+                            s.step_number === step.step_number ? { ...s, body: e.target.value } : s
+                          ))}
+                        />
+                      </div>
+                      <div>
+                        <label className="label text-xs flex items-center gap-1">
+                          <CalendarClock className="w-3.5 h-3.5" /> Fecha y hora de envío
+                        </label>
+                        <input
+                          type="datetime-local"
+                          className="input text-sm"
+                          value={step.scheduled_for}
+                          onChange={e => setPreviewSteps(prev => prev.map(s =>
+                            s.step_number === step.step_number ? { ...s, scheduled_for: e.target.value } : s
+                          ))}
+                        />
+                        <p className="text-xs text-gray-400 mt-1">
+                          cron-job.org enviará este email automáticamente cuando llegue esta fecha y hora.
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            <div className="flex gap-2 justify-between pt-1">
+              <button
+                onClick={() => { setSeqModalStep('info'); setPreviewSteps([]) }}
+                className="btn-secondary text-xs"
+              >
+                ← Volver
+              </button>
+              <div className="flex gap-2">
+                <button
+                  onClick={handleGeneratePreview}
+                  disabled={generatingPreview}
+                  className="btn-secondary text-xs"
+                >
+                  {generatingPreview ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Regenerando...</> : <><Sparkles className="w-3.5 h-3.5" /> Regenerar</>}
+                </button>
+                <button
+                  onClick={handleLaunchSequence}
+                  disabled={launchingSequence}
+                  className="btn-primary text-xs"
+                >
+                  {launchingSequence ? (
+                    <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Enviando...</>
+                  ) : (
+                    <><Send className="w-3.5 h-3.5" /> Confirmar y enviar</>
+                  )}
+                </button>
+              </div>
+            </div>
           </div>
-          <div className="flex gap-2 justify-end">
-            <button onClick={() => setShowSequenceModal(false)} className="btn-secondary text-xs">Cancelar</button>
-            <button
-              onClick={handleLaunchSequence}
-              disabled={launchingSequence}
-              className="btn-primary text-xs"
-            >
-              {launchingSequence ? (
-                <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Generando emails...</>
-              ) : (
-                <><Mails className="w-3.5 h-3.5" /> Iniciar secuencia</>
-              )}
-            </button>
-          </div>
-        </div>
+        )}
       </Modal>
     </div>
   )

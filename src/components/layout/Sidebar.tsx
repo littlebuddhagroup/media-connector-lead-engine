@@ -6,11 +6,12 @@ import { cn } from '@/lib/utils'
 import Image from 'next/image'
 import {
   LayoutDashboard, Megaphone, Users, Upload, Settings,
-  ChevronLeft, ChevronRight, LogOut, Telescope, Kanban, UserSearch, Mails
+  ChevronLeft, ChevronRight, LogOut, Telescope, Kanban, AtSign, Wrench, UsersRound, BarChart2, Mail
 } from 'lucide-react'
+import { MadeBy } from '@/components/ui/MadeBy'
 import { createClient } from '@/lib/supabase/client'
 import { useRouter } from 'next/navigation'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 
 const navItems = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -18,8 +19,12 @@ const navItems = [
   { href: '/campaigns', label: 'Campañas', icon: Megaphone },
   { href: '/leads', label: 'CRM / Leads', icon: Users },
   { href: '/discover', label: 'Buscar por email', icon: Telescope },
-  { href: '/apollo', label: 'Apollo — Contactos', icon: UserSearch },
+  { href: '/hunter', label: 'Hunter — Emails', icon: AtSign },
+  { href: '/tools', label: 'Herramientas', icon: Wrench },
+  { href: '/analytics', label: 'Analíticas', icon: BarChart2 },
+  { href: '/newsletters', label: 'Newsletters', icon: Mail },
   { href: '/imports', label: 'Importar CSV', icon: Upload },
+  { href: '/teams', label: 'Equipo', icon: UsersRound },
   { href: '/settings', label: 'Configuración', icon: Settings },
 ]
 
@@ -27,12 +32,34 @@ export default function Sidebar() {
   const pathname = usePathname()
   const router = useRouter()
   const [collapsed, setCollapsed] = useState(false)
+  const [userEmail, setUserEmail] = useState<string | null>(null)
+  const [userName, setUserName] = useState<string | null>(null)
+
+  useEffect(() => {
+    const supabase = createClient()
+    supabase.auth.getUser().then(({ data: { user } }) => {
+      if (user) {
+        setUserEmail(user.email ?? null)
+        // Intentar nombre desde metadata o perfil
+        const meta = user.user_metadata
+        const name = meta?.full_name || meta?.name || null
+        setUserName(name)
+      }
+    })
+  }, [])
 
   const handleSignOut = async () => {
     const supabase = createClient()
     await supabase.auth.signOut()
     router.push('/login')
   }
+
+  // Iniciales para el avatar
+  const initials = userName
+    ? userName.split(' ').map((n: string) => n[0]).slice(0, 2).join('').toUpperCase()
+    : userEmail
+      ? userEmail.slice(0, 2).toUpperCase()
+      : '?'
 
   return (
     <aside
@@ -81,8 +108,29 @@ export default function Sidebar() {
         })}
       </nav>
 
-      {/* Logout */}
-      <div className="px-2 pb-4 border-t border-gray-200 pt-4">
+      {/* User info + Logout */}
+      <div className="px-2 pb-4 border-t border-gray-200 pt-3 space-y-1">
+        {/* Usuario */}
+        {!collapsed ? (
+          <div className="flex items-center gap-2.5 px-2 py-2 rounded-xl bg-gray-50 mb-1">
+            <div className="w-8 h-8 rounded-full bg-brand-600 flex items-center justify-center shrink-0">
+              <span className="text-xs font-bold text-white">{initials}</span>
+            </div>
+            <div className="flex-1 min-w-0">
+              {userName && (
+                <p className="text-xs font-semibold text-gray-800 truncate">{userName}</p>
+              )}
+              <p className="text-xs text-gray-400 truncate">{userEmail ?? '—'}</p>
+            </div>
+          </div>
+        ) : (
+          <div className="flex justify-center mb-1" title={userEmail ?? undefined}>
+            <div className="w-8 h-8 rounded-full bg-brand-600 flex items-center justify-center">
+              <span className="text-xs font-bold text-white">{initials}</span>
+            </div>
+          </div>
+        )}
+
         <button
           onClick={handleSignOut}
           className="sidebar-link w-full text-left text-red-500 hover:text-red-600 hover:bg-red-50"
@@ -91,6 +139,12 @@ export default function Sidebar() {
           <LogOut className="w-4 h-4 shrink-0" />
           {!collapsed && <span>Cerrar sesión</span>}
         </button>
+
+        {!collapsed && (
+          <div className="pt-2 px-2">
+            <MadeBy />
+          </div>
+        )}
       </div>
 
       {/* Collapse toggle */}

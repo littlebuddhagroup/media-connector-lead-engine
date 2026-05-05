@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import Image from 'next/image'
 import { Mail, Lock, Eye, EyeOff } from 'lucide-react'
+import { MadeBy } from '@/components/ui/MadeBy'
 
 export default function LoginPage() {
   const router = useRouter()
@@ -34,7 +35,7 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-brand-950 via-brand-900 to-brand-800 flex items-center justify-center p-4">
+    <div className="relative min-h-screen bg-gradient-to-br from-brand-950 via-brand-900 to-brand-800 flex items-center justify-center p-4">
       <div className="w-full max-w-md">
         {/* Logo */}
         <div className="flex justify-center mb-8">
@@ -120,6 +121,9 @@ export default function LoginPage() {
             </Link>
           </p>
         </div>
+      </div>
+      <div className="absolute bottom-4 left-0 right-0 flex justify-center">
+        <MadeBy />
       </div>
     </div>
   )

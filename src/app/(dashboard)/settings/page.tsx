@@ -1,24 +1,30 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, lazy, Suspense } from 'react'
 import TopBar from '@/components/layout/TopBar'
-import { Save, CheckCircle, AlertCircle, Zap, XCircle } from 'lucide-react'
+import { Save, CheckCircle, AlertCircle, Zap, XCircle, Loader2 } from 'lucide-react'
+import { toast } from '@/components/ui/Toast'
+
+const RichTextEditor = lazy(() => import('@/components/ui/RichTextEditor'))
 
 const SERVICE_LABELS: Record<string, { label: string; description: string }> = {
-  gemini:  { label: 'Google Gemini',   description: 'Enriquecimiento IA y generación de mensajes' },
+  gemini:  { label: 'Google Gemini',   description: 'IA — enriquecimiento y mensajes' },
+  groq:    { label: 'Groq',            description: 'IA — alternativa gratuita con Llama 3.3 70B' },
   resend:  { label: 'Resend',          description: 'Envío de emails y tracking de aperturas' },
   serpapi: { label: 'SerpAPI',         description: 'Búsqueda de leads en Google' },
-  hunter:  { label: 'Hunter.io',       description: 'Búsqueda de emails por dominio' },
+  hunter:  { label: 'Hunter.io',       description: 'Búsqueda de emails verificados por dominio' },
   apollo:  { label: 'Apollo.io',       description: 'Búsqueda de contactos por cargo y sector' },
 }
 
 export default function SettingsPage() {
   const [settings, setSettings] = useState({
     email_from_address: '',
-    email_from_name: 'Media Connector',
+    email_from_name: 'Alicia Gómez',
     email_signature: '',
     email_daily_limit: 50,
-    ai_model: 'gemini-2.0-flash',
+    ai_model: 'gemini-2.5-flash',
+    ai_provider: 'groq' as string,
+    sender_email: '' as string,
     default_language: 'es',
     default_tone: 'consultivo',
     scraping_provider: 'serpapi',
@@ -29,15 +35,26 @@ export default function SettingsPage() {
   const [saved, setSaved] = useState(false)
   const [loading, setLoading] = useState(true)
 
+  // Gemini test
+  const [geminiStatus, setGeminiStatus] = useState<'idle' | 'loading' | 'ok' | 'error'>('idle')
+  const [geminiError, setGeminiError] = useState('')
+
   useEffect(() => {
     Promise.all([
       fetch('/api/settings').then(r => r.json()),
       fetch('/api/settings/status').then(r => r.json()),
     ]).then(([settingsJson, statusJson]) => {
-      if (settingsJson.data?.settings) setSettings(s => ({ ...s, ...settingsJson.data.settings }))
+      if (settingsJson.data?.settings) {
+        const loaded = settingsJson.data.settings
+        // Corregir nombre de remitente heredado del valor por defecto antiguo
+        if (!loaded.email_from_name || loaded.email_from_name === 'Media Connector') {
+          loaded.email_from_name = 'Alicia Gómez'
+        }
+        setSettings(s => ({ ...s, ...loaded }))
+      }
       if (statusJson.data) {
-        const { gemini, resend, serpapi, hunter, apollo, resend_from } = statusJson.data
-        setServiceStatus({ gemini, resend, serpapi, hunter, apollo })
+        const { gemini, groq, resend, serpapi, hunter, apollo, resend_from } = statusJson.data
+        setServiceStatus({ gemini, groq, resend, serpapi, hunter, apollo })
         setResendFrom(resend_from)
       }
       setLoading(false)
@@ -47,14 +64,36 @@ export default function SettingsPage() {
   const handleSaveSettings = async (e: React.FormEvent) => {
     e.preventDefault()
     setSaving(true)
-    await fetch('/api/settings', {
+    const res = await fetch('/api/settings', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(settings),
     })
+    const json = await res.json()
     setSaving(false)
-    setSaved(true)
-    setTimeout(() => setSaved(false), 3000)
+    if (res.ok) {
+      setSaved(true)
+      setTimeout(() => setSaved(false), 3000)
+      if (json.warning) {
+        toast.warning('Configuración parcial', json.warning)
+      }
+    } else {
+      toast.error('Error al guardar', json.error || 'Inténtalo de nuevo.')
+    }
+  }
+
+  const handleTestGemini = async () => {
+    setGeminiStatus('loading')
+    setGeminiError('')
+    const model = settings.ai_model || 'gemini-2.5-flash'
+    const res = await fetch(`/api/settings/test-gemini?model=${encodeURIComponent(model)}`)
+    const json = await res.json()
+    if (json.ok) {
+      setGeminiStatus('ok')
+    } else {
+      setGeminiStatus('error')
+      setGeminiError(json.error ?? 'Error desconocido')
+    }
   }
 
   if (loading) return <div className="p-6 text-gray-400">Cargando configuración...</div>
@@ -136,7 +175,7 @@ export default function SettingsPage() {
                 <label className="label">Nombre remitente</label>
                 <input
                   className="input"
-                  placeholder="Media Connector"
+                  placeholder="Alicia Gómez"
                   value={settings.email_from_name}
                   onChange={e => setSettings(s => ({ ...s, email_from_name: e.target.value }))}
                 />
@@ -144,43 +183,162 @@ export default function SettingsPage() {
             </div>
 
             <div>
-              <label className="label">Firma de email</label>
-              <textarea
-                className="input resize-none"
-                rows={3}
-                placeholder="Tu nombre&#10;Tu empresa&#10;www.tuempresa.com"
-                value={settings.email_signature}
-                onChange={e => setSettings(s => ({ ...s, email_signature: e.target.value }))}
-              />
+              <label className="label">
+                Firma de email
+                <span className="ml-1 text-xs text-gray-400 font-normal">— admite imágenes, logos y enlaces</span>
+              </label>
+              <Suspense fallback={
+                <textarea
+                  className="input resize-none"
+                  rows={4}
+                  placeholder="Tu nombre · Tu empresa · www.tuempresa.com"
+                  value={settings.email_signature}
+                  onChange={e => setSettings(s => ({ ...s, email_signature: e.target.value }))}
+                />
+              }>
+                <RichTextEditor
+                  value={settings.email_signature}
+                  onChange={v => setSettings(s => ({ ...s, email_signature: v }))}
+                  placeholder="Tu nombre · Tu empresa · www.tuempresa.com — puedes añadir logo con el botón de imagen"
+                  minHeight={120}
+                />
+              </Suspense>
+              <p className="text-xs text-gray-400 mt-1">
+                Se añade automáticamente al final de cada email enviado.
+              </p>
             </div>
 
             <div>
               <label className="label">Límite diario de emails</label>
-              <input
-                className="input w-32"
-                type="number"
-                min={1}
-                max={500}
+              <select
+                className="input w-48"
                 value={settings.email_daily_limit}
                 onChange={e => setSettings(s => ({ ...s, email_daily_limit: parseInt(e.target.value) }))}
-              />
-              <p className="text-xs text-gray-400 mt-1">Límite de seguridad para evitar bloqueos</p>
+              >
+                {[10, 25, 50, 75, 100, 150, 200, 300, 500].map(n => (
+                  <option key={n} value={n}>{n} emails / día</option>
+                ))}
+                <option value={0}>Sin límite</option>
+              </select>
+              <p className="text-xs text-gray-400 mt-1">
+                Límite de seguridad para evitar bloqueos y caer en spam.
+                {settings.email_daily_limit === 0 && (
+                  <span className="text-amber-600"> ⚠ Sin límite — úsalo con precaución.</span>
+                )}
+              </p>
             </div>
           </div>
 
           <h2 className="text-sm font-semibold text-gray-900 mb-4 mt-6">Inteligencia Artificial</h2>
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="label">Modelo Gemini</label>
-              <select
-                className="input"
-                value={settings.ai_model}
-                onChange={e => setSettings(s => ({ ...s, ai_model: e.target.value }))}>
-                <option value="gemini-2.0-flash">Gemini 2.0 Flash (recomendado)</option>
-                <option value="gemini-2.0-flash-lite">Gemini 2.0 Flash Lite (económico)</option>
-                <option value="gemini-1.5-pro">Gemini 1.5 Pro (mayor calidad)</option>
-              </select>
+
+          {/* Selector de proveedor */}
+          <div className="mb-4 p-4 bg-gray-50 border border-gray-200 rounded-xl space-y-3">
+            <label className="label mb-0">Proveedor de IA</label>
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                type="button"
+                onClick={() => setSettings(s => ({ ...s, ai_provider: 'groq' }))}
+                className={`flex flex-col items-start p-3 rounded-xl border-2 transition-all text-left ${
+                  settings.ai_provider === 'groq'
+                    ? 'border-brand-500 bg-brand-50'
+                    : 'border-gray-200 bg-white hover:border-gray-300'
+                }`}
+              >
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="text-sm font-semibold text-gray-900">Groq</span>
+                  <span className="text-xs bg-green-100 text-green-700 px-1.5 py-0.5 rounded-full font-medium">Gratis</span>
+                </div>
+                <p className="text-xs text-gray-500">Sin tarjeta. Llama 3.3 70B. Muy rápido.</p>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setSettings(s => ({ ...s, ai_provider: 'gemini' }))
+                  setGeminiStatus('idle')
+                }}
+                className={`flex flex-col items-start p-3 rounded-xl border-2 transition-all text-left ${
+                  settings.ai_provider === 'gemini'
+                    ? 'border-brand-500 bg-brand-50'
+                    : 'border-gray-200 bg-white hover:border-gray-300'
+                }`}
+              >
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="text-sm font-semibold text-gray-900">Google Gemini</span>
+                  {geminiStatus === 'ok' && (
+                    <span className="text-xs bg-green-100 text-green-700 px-1.5 py-0.5 rounded-full font-medium flex items-center gap-0.5">
+                      <CheckCircle className="w-3 h-3" /> Conectado
+                    </span>
+                  )}
+                  {geminiStatus === 'error' && (
+                    <span className="text-xs bg-red-100 text-red-700 px-1.5 py-0.5 rounded-full font-medium">Error</span>
+                  )}
+                </div>
+                <p className="text-xs text-gray-500">Gemini 2.0 Flash. Alta calidad.</p>
+              </button>
             </div>
+
+            {/* Test Gemini + Selector de modelo — solo visible cuando está seleccionado */}
+            {settings.ai_provider === 'gemini' && (
+              <div className="pt-1 space-y-3">
+                <button
+                  type="button"
+                  onClick={handleTestGemini}
+                  disabled={geminiStatus === 'loading'}
+                  className="flex items-center gap-1.5 text-xs bg-white border border-gray-200 hover:border-brand-400 text-gray-700 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50"
+                >
+                  {geminiStatus === 'loading'
+                    ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Verificando...</>
+                    : <><Zap className="w-3.5 h-3.5 text-brand-500" /> Verificar conexión</>
+                  }
+                </button>
+                {geminiStatus === 'ok' && (
+                  <p className="text-xs text-green-600 flex items-center gap-1">
+                    <CheckCircle className="w-3.5 h-3.5" /> API key válida y billing configurado correctamente.
+                  </p>
+                )}
+                {geminiStatus === 'error' && (
+                  <p className="text-xs text-red-600">{geminiError}</p>
+                )}
+
+                {/* Selector de modelo Gemini */}
+                <div>
+                  <label className="label mb-2">Modelo Gemini</label>
+                  <div className="grid grid-cols-2 gap-2">
+                    {[
+                      { id: 'gemini-2.5-flash',   label: 'Gemini 2.5 Flash',   badge: 'Recomendado',  badgeColor: 'bg-brand-100 text-brand-700',   desc: 'El modelo actual de Gemini. Rápido e inteligente.' },
+                      { id: 'gemini-1.5-flash',   label: 'Gemini 1.5 Flash',   badge: 'Más estable',  badgeColor: 'bg-green-100 text-green-700',   desc: 'Versión anterior. Sin errores 503. Ideal si hay alta demanda.' },
+                      { id: 'gemini-1.5-pro',     label: 'Gemini 1.5 Pro',     badge: 'Estable',      badgeColor: 'bg-green-100 text-green-700',   desc: 'Versión pro anterior. Potente y sin problemas de cuota.' },
+                      { id: 'gemini-2.5-pro',     label: 'Gemini 2.5 Pro',     badge: 'Más potente',  badgeColor: 'bg-purple-100 text-purple-700', desc: 'El más capaz. Cuota diaria limitada en plan gratuito.' },
+                    ].map(model => (
+                      <button
+                        key={model.id}
+                        type="button"
+                        onClick={() => setSettings(s => ({ ...s, ai_model: model.id }))}
+                        className={`flex flex-col items-start p-2.5 rounded-xl border-2 transition-all text-left ${
+                          settings.ai_model === model.id
+                            ? 'border-brand-500 bg-brand-50'
+                            : 'border-gray-200 bg-white hover:border-gray-300'
+                        }`}
+                      >
+                        <div className="flex items-center gap-1.5 mb-0.5 flex-wrap">
+                          <span className="text-xs font-semibold text-gray-900">{model.label}</span>
+                          <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${model.badgeColor}`}>{model.badge}</span>
+                        </div>
+                        <p className="text-[11px] text-gray-500 leading-tight">{model.desc}</p>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <p className="text-xs text-gray-400">
+              El proveedor se configura en <code className="bg-gray-100 px-1 rounded">.env.local</code> con <code className="bg-gray-100 px-1 rounded">AI_PROVIDER=groq</code> o <code className="bg-gray-100 px-1 rounded">AI_PROVIDER=gemini</code>
+            </p>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="label">Tono por defecto</label>
               <select

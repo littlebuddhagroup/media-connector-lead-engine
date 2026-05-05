@@ -1,168 +1,1699 @@
-import { createClient } from '@/lib/supabase/server'
-import { redirect, notFound } from 'next/navigation'
-import Link from 'next/link'
+'use client'
+
+import { useState, useEffect, useCallback } from 'react'
+import RichTextEditor from '@/components/ui/RichTextEditor'
+import { useParams, useRouter } from 'next/navigation'
 import TopBar from '@/components/layout/TopBar'
-import { Plus, Users, Mail, TrendingUp, Zap, ArrowLeft } from 'lucide-react'
-import { formatDate, statusLabel, statusColor, priorityColor, scoreToBg } from '@/lib/utils'
+import Link from 'next/link'
+import {
+  ArrowLeft, Users, Mail, TrendingUp, Target, Zap, Calendar,
+  Plus, Search, Trash2, Send, ChevronRight, BarChart3, FileText,
+  Settings, Loader2, CheckCircle, XCircle, Play, Pause,
+  Star, Clock, Check, Save, Edit2, Mails, Copy, Sparkles, AlertTriangle,
+  CalendarClock, ChevronDown, ChevronUp
+} from 'lucide-react'
+import { toast } from '@/components/ui/Toast'
+import { statusLabel, statusColor, priorityColor, scoreToBg, formatDate, formatDateRelative, htmlToText, textToHtml } from '@/lib/utils'
+import Modal from '@/components/ui/Modal'
 
-type Params = { params: Promise<{ id: string }> }
+// ─── Tipos ────────────────────────────────────────────────────
+interface Campaign {
+  id: string; name: string; description?: string; status: string
+  country?: string; sector?: string; language?: string
+  start_date?: string; end_date?: string
+  goal_leads?: number; goal_meetings?: number; goal_replies?: number
+  created_at: string
+}
 
-export default async function CampaignDetailPage({ params }: Params) {
-  const { id } = await params
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) redirect('/login')
+interface CampaignStats {
+  leads: {
+    total: number; enriched: number; contacted: number; replied: number
+    interested: number; meetings: number; closed: number; discarded: number; new: number
+    avg_score: number; by_priority: { high: number; medium: number; low: number }
+  }
+  emails: {
+    sent: number; opened: number; replied: number; bounced: number
+    open_rate: number; reply_rate: number; click_rate: number
+  }
+  sequences: { active: number }
+  conversion: { contact_rate: number; reply_rate: number; meeting_rate: number }
+}
 
-  const { data: campaign, error } = await supabase
-    .from('campaigns')
-    .select('*, leads(id, company_name, email, status, priority, score, created_at, is_enriched)')
-    .eq('id', id)
-    .eq('user_id', user.id)
-    .single()
+interface Lead {
+  id: string; company_name: string; email?: string; status: string
+  priority: string; score: number; is_enriched?: boolean; created_at: string; sector?: string
+  campaign_id?: string | null
+}
 
-  if (error || !campaign) notFound()
+interface TemplateStep {
+  step_number: number; subject: string; body: string; delay_days: number; tone: string
+  scheduled_date?: string  // YYYY-MM-DD (tab editor)
+  scheduled_time?: string  // HH:MM (tab editor)
+  scheduled_for?: string   // datetime-local string para el modal preview
+}
 
-  const leads = campaign.leads ?? []
-  const replyRate = campaign.contacted_leads > 0
-    ? Math.round((campaign.replied_leads / campaign.contacted_leads) * 100)
-    : 0
+interface Template {
+  id: string; name: string; description?: string; steps: TemplateStep[]
+}
+
+// ─── Constantes ────────────────────────────────────────────────
+const TONES = ['consultivo', 'directo', 'cercano', 'formal', 'tecnico']
+
+const STATUS_OPTIONS = ['draft', 'active', 'paused', 'completed']
+const STATUS_LABELS: Record<string, string> = {
+  draft: 'Borrador', active: 'Activa', paused: 'Pausada', completed: 'Completada'
+}
+const STATUS_COLORS: Record<string, string> = {
+  draft: 'bg-gray-100 text-gray-600',
+  active: 'bg-green-100 text-green-700',
+  paused: 'bg-amber-100 text-amber-700',
+  completed: 'bg-blue-100 text-blue-700',
+}
+
+// ─── Subcomponentes ───────────────────────────────────────────
+function StatCard({ label, value, sub, color, icon: Icon }: {
+  label: string; value: string | number; sub?: string; color: string; icon: React.ElementType
+}) {
+  return (
+    <div className="card p-4">
+      <div className={`w-8 h-8 rounded-lg ${color} flex items-center justify-center mb-2`}>
+        <Icon className="w-4 h-4" />
+      </div>
+      <p className="text-2xl font-bold text-gray-900">{value}</p>
+      <p className="text-xs text-gray-500 mt-0.5">{label}</p>
+      {sub && <p className="text-xs text-gray-400 mt-0.5">{sub}</p>}
+    </div>
+  )
+}
+
+function GoalBar({ label, current, goal, color }: {
+  label: string; current: number; goal: number; color: string
+}) {
+  const pct = goal > 0 ? Math.min(100, Math.round((current / goal) * 100)) : 0
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-xs text-gray-600">{label}</span>
+        <span className="text-xs font-semibold text-gray-800">{current} / {goal} <span className="font-normal text-gray-400">({pct}%)</span></span>
+      </div>
+      <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
+        <div className={`h-full ${color} rounded-full transition-all duration-500`} style={{ width: `${pct}%` }} />
+      </div>
+    </div>
+  )
+}
+
+function FunnelStep({ label, count, total, color }: {
+  label: string; count: number; total: number; color: string
+}) {
+  const pct = total > 0 ? Math.round((count / total) * 100) : 0
+  return (
+    <div className="flex items-center gap-3">
+      <div className={`w-3 h-3 rounded-full ${color} shrink-0`} />
+      <div className="flex-1 min-w-0">
+        <div className="flex justify-between text-xs mb-0.5">
+          <span className="text-gray-600">{label}</span>
+          <span className="font-medium text-gray-800">{count} <span className="text-gray-400">({pct}%)</span></span>
+        </div>
+        <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
+          <div className={`h-full ${color} rounded-full`} style={{ width: `${pct}%` }} />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Página principal ─────────────────────────────────────────
+export default function CampaignDetailPage() {
+  const { id } = useParams<{ id: string }>()
+  const router = useRouter()
+
+  const [campaign, setCampaign] = useState<Campaign | null>(null)
+  const [stats, setStats] = useState<CampaignStats | null>(null)
+  const [leads, setLeads] = useState<Lead[]>([])
+  const [sequences, setSequences] = useState<Record<string, unknown>[]>([])
+  const [templates, setTemplates] = useState<Template[]>([])
+  const [loading, setLoading] = useState(true)
+  const [activeTab, setActiveTab] = useState<'overview' | 'leads' | 'sequences' | 'settings'>('overview')
+
+  // Asignar leads
+  const [showAssignModal, setShowAssignModal] = useState(false)
+  const [availableLeads, setAvailableLeads] = useState<Lead[]>([])
+  const [assignSearch, setAssignSearch] = useState('')
+  const [selectedToAssign, setSelectedToAssign] = useState<Set<string>>(new Set())
+  const [assigning, setAssigning] = useState(false)
+  const [loadingAvailable, setLoadingAvailable] = useState(false)
+
+  // Quitar leads
+  const [selectedToRemove, setSelectedToRemove] = useState<Set<string>>(new Set())
+  const [removing, setRemoving] = useState(false)
+
+  // Plantilla
+  const [editingTemplate, setEditingTemplate] = useState<Template | null>(null)
+  const [savingTemplate, setSavingTemplate] = useState(false)
+  const [generatingTemplate, setGeneratingTemplate] = useState(false)
+
+  // Modal secuencia campaña (mismo flujo que lead individual)
+  const [showSeqModal, setShowSeqModal] = useState(false)
+  const [seqModalStep, setSeqModalStep] = useState<'info' | 'preview'>('info')
+  const [seqPreviewSteps, setSeqPreviewSteps] = useState<TemplateStep[]>([])
+  const [expandedSeqStep, setExpandedSeqStep] = useState<number>(1)
+  const [seqUseEmojis, setSeqUseEmojis] = useState(false)
+  const [seqLanguage, setSeqLanguage] = useState('es')
+  const [launchingFromModal, setLaunchingFromModal] = useState(false)
+
+  // Cancelar / borrar secuencia
+  const [cancellingSeq, setCancellingSeq] = useState<string | null>(null)
+  const [deletingSeq, setDeletingSeq] = useState<string | null>(null)
+
+  // Expandir secuencia para ver/editar pasos
+  const [expandedSeqId, setExpandedSeqId] = useState<string | null>(null)
+  const [expandedStepId, setExpandedStepId] = useState<string | null>(null)
+  const [editingBodyStepId, setEditingBodyStepId] = useState<string | null>(null)
+  const [stepEdits, setStepEdits] = useState<Record<string, { scheduled_for?: string; subject?: string; body?: string }>>({})
+  const [savingStep, setSavingStep] = useState<string | null>(null)
+
+  // Buscador y paginación de secuencias
+  const [seqSearch, setSeqSearch] = useState('')
+  const [seqPage, setSeqPage] = useState(1)
+  const SEQ_PAGE_SIZE = 25
+
+  // Reprogramación masiva de secuencias (3 inputs independientes)
+  const [bulkDates, setBulkDates] = useState<[string, string, string]>(['', '', ''])
+  const [applyingBulk, setApplyingBulk] = useState(false)
+  const [deletingAllSeqs, setDeletingAllSeqs] = useState(false)
+
+  // Genera los 3 emails en el modal de secuencia de campaña
+  const handleGenerateCampaignPreview = async () => {
+    const tones = ['consultivo', 'directo', 'cercano']
+    setGeneratingTemplate(true)
+    const res = await fetch(`/api/campaigns/${id}/templates/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tones, useEmojis: seqUseEmojis, language: seqLanguage }),
+    })
+    const json = await res.json()
+    setGeneratingTemplate(false)
+    if (res.ok && Array.isArray(json.data)) {
+      const now = new Date()
+      const delayDays = [1, 5, 10]
+      const steps: TemplateStep[] = json.data.map((s: TemplateStep, i: number) => {
+        const d = new Date(now)
+        d.setDate(d.getDate() + delayDays[i])
+        d.setHours(9, 0, 0, 0)
+        // datetime-local format: "YYYY-MM-DDTHH:MM"
+        const pad = (n: number) => String(n).padStart(2, '0')
+        const scheduled_for = `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T09:00`
+        return {
+          step_number: s.step_number,
+          subject: s.subject,
+          body: s.body,
+          delay_days: s.delay_days,
+          tone: s.tone,
+          scheduled_for,
+        }
+      })
+      setSeqPreviewSteps(steps)
+      setExpandedSeqStep(1)
+      setSeqModalStep('preview')
+    } else {
+      toast.error('Error IA', json.error ?? 'No se pudo generar la secuencia.')
+    }
+  }
+
+  // Guarda los steps del modal como plantilla de campaña
+  const handleSaveCampaignPreview = async () => {
+    setSavingTemplate(true)
+    const payload = {
+      id: editingTemplate?.id ?? '',
+      name: 'Secuencia 3 Toques',
+      description: '',
+      steps: seqPreviewSteps.map(s => ({
+        ...s,
+        scheduled_date: s.scheduled_for ? s.scheduled_for.slice(0, 10) : undefined,
+        scheduled_time: s.scheduled_for ? s.scheduled_for.slice(11, 16) : undefined,
+        scheduled_for: undefined,
+      })),
+    }
+    const res = await fetch(`/api/campaigns/${id}/templates`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    setSavingTemplate(false)
+    if (res.ok) {
+      fetchAll()
+      setShowSeqModal(false)
+      setSeqModalStep('info')
+      toast.success('Secuencia guardada', 'Los 3 toques se usarán al lanzar secuencias en bloque.')
+    } else {
+      const j = await res.json()
+      toast.error('Error', j.error)
+    }
+  }
+
+  // Guarda la plantilla del modal y lanza secuencias para todos los leads aptos
+  const handleConfirmAndLaunch = async () => {
+    setLaunchingFromModal(true)
+    // 1. Guardar plantilla
+    const payload = {
+      id: editingTemplate?.id ?? '',
+      name: 'Secuencia 3 Toques',
+      description: '',
+      steps: seqPreviewSteps.map(s => ({
+        ...s,
+        scheduled_date: s.scheduled_for ? s.scheduled_for.slice(0, 10) : undefined,
+        scheduled_time: s.scheduled_for ? s.scheduled_for.slice(11, 16) : undefined,
+        scheduled_for: undefined,
+      })),
+    }
+    await fetch(`/api/campaigns/${id}/templates`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    // 2. Lanzar secuencias
+    const res = await fetch(`/api/campaigns/${id}/launch-sequences`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ accounts: launchAccounts.length ? launchAccounts : undefined, language: seqLanguage }),
+    })
+    const json = await res.json()
+    setLaunchingFromModal(false)
+    if (!res.ok) { toast.error('Error al lanzar', json.error); return }
+    setShowSeqModal(false)
+    setSeqModalStep('info')
+    fetchAll()
+    toast.success(
+      `Secuencias lanzadas: ${json.launched}`,
+      `${json.launched} leads · ${json.errors} errores · ${json.skipped} ya tenían secuencia`
+    )
+  }
+
+  const handleCancelSequence = async (seqId: string) => {
+    setCancellingSeq(seqId)
+    const res = await fetch('/api/sequences', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sequence_id: seqId, action: 'cancel' }),
+    })
+    setCancellingSeq(null)
+    if (res.ok) {
+      const seqRes = await fetch(`/api/sequences?campaign_id=${id}`)
+      const seqJson = await seqRes.json()
+      setSequences(seqJson.data ?? [])
+      toast.success('Secuencia cancelada')
+    } else {
+      toast.error('Error', 'No se pudo cancelar la secuencia.')
+    }
+  }
+
+  const handleDeleteSequence = async (seqId: string) => {
+    if (!confirm('¿Borrar esta secuencia definitivamente? Podrás crear una nueva desde el lead.')) return
+    setDeletingSeq(seqId)
+    const res = await fetch('/api/sequences', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sequence_id: seqId }),
+    })
+    setDeletingSeq(null)
+    if (res.ok) {
+      const seqRes = await fetch(`/api/sequences?campaign_id=${id}`)
+      const seqJson = await seqRes.json()
+      setSequences(seqJson.data ?? [])
+      toast.success('Secuencia borrada')
+    } else {
+      toast.error('Error', 'No se pudo borrar la secuencia.')
+    }
+  }
+
+  const handleSaveStep = async (stepId: string) => {
+    const edits = stepEdits[stepId]
+    if (!edits) return
+    setSavingStep(stepId)
+    const payload: Record<string, string> = { step_id: stepId }
+    if (edits.scheduled_for) payload.scheduled_for = new Date(edits.scheduled_for).toISOString()
+    if (edits.subject !== undefined) payload.subject = edits.subject
+    // body stored in edits is already HTML (textToHtml applied on change)
+    if (edits.body !== undefined) payload.body = edits.body
+    const res = await fetch('/api/sequences/steps', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    setSavingStep(null)
+    if (res.ok) {
+      toast.success('Paso actualizado')
+      // Limpiar edits de este paso
+      setStepEdits(prev => { const n = { ...prev }; delete n[stepId]; return n })
+      const seqRes = await fetch(`/api/sequences?campaign_id=${id}`)
+      const seqJson = await seqRes.json()
+      setSequences(seqJson.data ?? [])
+    } else {
+      const j = await res.json()
+      toast.error('Error', j.error)
+    }
+  }
+
+  const handleApplyBulkDates = async () => {
+    const seqList = sequences as { id: string; sequence_steps?: { id: string; step_number: number; status: string }[] }[]
+    const stepsToUpdate: { stepId: string; scheduled_for: string }[] = []
+    seqList.forEach(seq => {
+      (seq.sequence_steps ?? []).forEach(step => {
+        if (step.status === 'sent' || step.status === 'skipped') return
+        const dateVal = bulkDates[step.step_number - 1]
+        if (dateVal) {
+          stepsToUpdate.push({ stepId: step.id, scheduled_for: new Date(dateVal).toISOString() })
+        }
+      })
+    })
+    if (!stepsToUpdate.length) { toast.error('Sin cambios', 'Introduce al menos una fecha y hora.'); return }
+    setApplyingBulk(true)
+    await Promise.all(stepsToUpdate.map(({ stepId, scheduled_for }) =>
+      fetch('/api/sequences/steps', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ step_id: stepId, scheduled_for }),
+      })
+    ))
+    setApplyingBulk(false)
+    setBulkDates(['', '', ''])
+    const seqRes = await fetch(`/api/sequences?campaign_id=${id}`)
+    const seqJson = await seqRes.json()
+    setSequences(seqJson.data ?? [])
+    toast.success('Fechas actualizadas', `${stepsToUpdate.length} pasos reprogramados.`)
+  }
+
+  const handleDeleteAllSequences = async () => {
+    if (!confirm(`¿Borrar TODAS las ${sequences.length} secuencias de esta campaña? Esta acción no se puede deshacer.`)) return
+    setDeletingAllSeqs(true)
+    const seqList = sequences as { id: string }[]
+    await Promise.all(seqList.map(seq =>
+      fetch('/api/sequences', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sequence_id: seq.id }),
+      })
+    ))
+    setDeletingAllSeqs(false)
+    setExpandedSeqId(null)
+    fetchAll()
+    toast.success('Secuencias eliminadas', 'Todas las secuencias han sido borradas.')
+  }
+
+  // Lanzamiento masivo de secuencias
+  const [showLaunchModal, setShowLaunchModal] = useState(false)
+  const [launchingBulk, setLaunchingBulk] = useState(false)
+  const [launchAccounts, setLaunchAccounts] = useState<string[]>([
+    'guillaume@mymediaconnect.com',
+    'guillaume@gomymediaconnect.com',
+    'guillaume@mymediaconnectgo.com',
+    'guillaume@mymediaconnect.es',
+  ])
+
+  // Ajustes
+  const [editSettings, setEditSettings] = useState<Partial<Campaign>>({})
+  const [savingSettings, setSavingSettings] = useState(false)
+
+  const fetchAll = useCallback(async () => {
+    const [campRes, statsRes, leadsRes, seqRes, tmplRes] = await Promise.all([
+      fetch(`/api/campaigns/${id}`),
+      fetch(`/api/campaigns/${id}/stats`),
+      fetch(`/api/leads?campaign_id=${id}&per_page=200`),
+      fetch(`/api/sequences?campaign_id=${id}`),
+      fetch(`/api/campaigns/${id}/templates`),
+    ])
+    const [campJson, statsJson, leadsJson, seqJson, tmplJson] = await Promise.all([
+      campRes.json(), statsRes.json(), leadsRes.json(), seqRes.json(), tmplRes.json(),
+    ])
+    if (campJson.data) setCampaign(campJson.data)
+    if (statsJson.data) setStats(statsJson.data)
+    setLeads(leadsJson.data ?? [])
+    setSequences(seqJson.data ?? [])
+    const fetchedTemplates = tmplJson.data ?? []
+    setTemplates(fetchedTemplates)
+    // Auto-cargar el primer template si existe, o inicializar vacío
+    if (fetchedTemplates.length > 0) {
+      setEditingTemplate(fetchedTemplates[0])
+    } else {
+      setEditingTemplate({
+        id: '',
+        name: 'Secuencia 3 Toques',
+        steps: [
+          { step_number: 1, subject: '', body: '', delay_days: 0, tone: 'consultivo' },
+          { step_number: 2, subject: '', body: '', delay_days: 5, tone: 'directo' },
+          { step_number: 3, subject: '', body: '', delay_days: 10, tone: 'cercano' },
+        ]
+      })
+    }
+    setLoading(false)
+  }, [id])
+
+  useEffect(() => { fetchAll() }, [fetchAll])
+
+  useEffect(() => {
+    if (campaign) setEditSettings({
+      name: campaign.name, description: campaign.description, status: campaign.status,
+      country: campaign.country, sector: campaign.sector,
+      start_date: campaign.start_date, end_date: campaign.end_date,
+      goal_leads: campaign.goal_leads, goal_meetings: campaign.goal_meetings, goal_replies: campaign.goal_replies,
+    })
+  }, [campaign])
+
+  // Cargar leads disponibles para asignar
+  const fetchAvailable = useCallback(async () => {
+    setLoadingAvailable(true)
+    const res = await fetch(`/api/campaigns/${id}/leads?search=${assignSearch}`)
+    const json = await res.json()
+    setAvailableLeads(json.data ?? [])
+    setLoadingAvailable(false)
+  }, [id, assignSearch])
+
+  useEffect(() => {
+    if (showAssignModal) fetchAvailable()
+  }, [showAssignModal, fetchAvailable])
+
+  useEffect(() => {
+    const t = setTimeout(() => { if (showAssignModal) fetchAvailable() }, 300)
+    return () => clearTimeout(t)
+  }, [assignSearch, showAssignModal, fetchAvailable])
+
+  const handleAssign = async () => {
+    if (selectedToAssign.size === 0) return
+    setAssigning(true)
+    const res = await fetch(`/api/campaigns/${id}/leads`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lead_ids: Array.from(selectedToAssign) }),
+    })
+    setAssigning(false)
+    if (res.ok) {
+      setShowAssignModal(false)
+      setSelectedToAssign(new Set())
+      setAssignSearch('')
+      fetchAll()
+      toast.success('Leads asignados', `${selectedToAssign.size} lead(s) añadidos a la campaña.`)
+    } else {
+      const json = await res.json()
+      toast.error('Error', json.error ?? 'No se pudieron asignar los leads.')
+    }
+  }
+
+  const handleRemoveLeads = async () => {
+    if (selectedToRemove.size === 0) return
+    setRemoving(true)
+    const res = await fetch(`/api/campaigns/${id}/leads`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lead_ids: Array.from(selectedToRemove) }),
+    })
+    setRemoving(false)
+    if (res.ok) {
+      setSelectedToRemove(new Set())
+      fetchAll()
+      toast.success('Leads quitados', 'Los leads han sido desvinculados de la campaña.')
+    } else {
+      const json = await res.json()
+      toast.error('Error', json.error)
+    }
+  }
+
+  const handleSaveTemplate = async () => {
+    if (!editingTemplate) return
+    setSavingTemplate(true)
+    const payload = {
+      ...editingTemplate,
+      name: 'Secuencia 3 Toques', // Siempre guardamos con este nombre canónico
+    }
+    const res = await fetch(`/api/campaigns/${id}/templates`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    setSavingTemplate(false)
+    if (res.ok) {
+      fetchAll()
+      toast.success('Secuencia guardada', 'Los 3 toques se usarán al lanzar secuencias en bloque.')
+    } else {
+      const json = await res.json()
+      toast.error('Error', json.error)
+    }
+  }
+
+  const handleBulkLaunch = async () => {
+    setLaunchingBulk(true)
+    try {
+      const res = await fetch(`/api/campaigns/${id}/launch-sequences`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accounts: launchAccounts, language: seqLanguage }),
+      })
+      const json = await res.json()
+      if (!res.ok) { toast.error('Error al lanzar', json.error); return }
+      setShowLaunchModal(false)
+      // Recargar secuencias
+      const seqRes = await fetch(`/api/sequences?campaign_id=${id}`)
+      const seqJson = await seqRes.json()
+      setSequences(seqJson.data ?? [])
+      toast.success(
+        `Secuencias lanzadas: ${json.launched}`,
+        `${json.launched} leads · ${json.errors} errores · ${json.skipped} ya tenían secuencia`
+      )
+    } catch {
+      toast.error('Error de red', 'No se pudo conectar con el servidor')
+    } finally {
+      setLaunchingBulk(false)
+    }
+  }
+
+  const handleSaveSettings = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setSavingSettings(true)
+    const res = await fetch(`/api/campaigns/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(editSettings),
+    })
+    setSavingSettings(false)
+    const json = await res.json()
+    if (res.ok) {
+      fetchAll()
+      if (json.warning) {
+        toast.warning('Cambios guardados (parcialmente)', json.warning)
+      } else {
+        toast.success('Campaña actualizada')
+      }
+    } else {
+      toast.error('Error', json.error)
+    }
+  }
+
+  const handleGenerateTemplate = async () => {
+    const currentTemplate = editingTemplate ?? {
+      id: '', name: 'Secuencia 3 Toques',
+      steps: [
+        { step_number: 1, subject: '', body: '', delay_days: 0, tone: 'consultivo' },
+        { step_number: 2, subject: '', body: '', delay_days: 5, tone: 'directo' },
+        { step_number: 3, subject: '', body: '', delay_days: 10, tone: 'cercano' },
+      ]
+    }
+    setGeneratingTemplate(true)
+    const tones = currentTemplate.steps.map(s => s.tone)
+    const res = await fetch(`/api/campaigns/${id}/templates/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tones }),
+    })
+    const json = await res.json()
+    setGeneratingTemplate(false)
+    if (res.ok && Array.isArray(json.data)) {
+      setEditingTemplate(t => {
+        const base = t ?? currentTemplate
+        return {
+          ...base,
+          name: 'Secuencia 3 Toques',
+          steps: json.data.map((s: TemplateStep, i: number) => ({
+            ...base.steps[i],
+            subject: s.subject,
+            body: s.body,
+          }))
+        }
+      })
+      toast.success('Secuencia generada', 'Revisa los 3 emails y pulsa Guardar cuando estés listo.')
+    } else {
+      toast.error('Error IA', json.error ?? 'No se pudo generar la secuencia.')
+    }
+  }
+
+  const handleDeleteCampaign = async () => {
+    if (!confirm(`¿Seguro que quieres eliminar "${campaign?.name}"? Los leads no se borrarán.`)) return
+    const res = await fetch(`/api/campaigns/${id}`, { method: 'DELETE' })
+    if (res.ok) {
+      router.push('/campaigns')
+    } else {
+      toast.error('Error', 'No se pudo eliminar la campaña.')
+    }
+  }
+
+  const initNewTemplate = () => {
+    setEditingTemplate({
+      id: '', name: `Plantilla ${campaign?.name ?? ''}`,
+      steps: [
+        { step_number: 1, subject: '', body: '', delay_days: 0, tone: 'consultivo' },
+        { step_number: 2, subject: '', body: '', delay_days: 5, tone: 'directo' },
+        { step_number: 3, subject: '', body: '', delay_days: 10, tone: 'cercano' },
+      ]
+    })
+  }
+
+  if (loading) return <div className="p-6 text-gray-400 flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> Cargando campaña...</div>
+  if (!campaign) return <div className="p-6 text-red-500">Campaña no encontrada.</div>
+
+  const tabs = [
+    { id: 'overview', label: 'Resumen', icon: BarChart3 },
+    { id: 'leads', label: `Leads (${leads.length})`, icon: Users },
+    { id: 'sequences', label: `Secuencias (${sequences.length})`, icon: Mails },
+    { id: 'settings', label: 'Ajustes', icon: Settings },
+  ] as const
+
+  const hasGoals = (campaign.goal_leads ?? 0) > 0 || (campaign.goal_meetings ?? 0) > 0 || (campaign.goal_replies ?? 0) > 0
 
   return (
     <div className="animate-fade-in">
       <TopBar
         title={campaign.name}
-        subtitle={`${statusLabel(campaign.status)} · ${leads.length} leads`}
+        subtitle={
+          <span className="flex items-center gap-2">
+            <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${STATUS_COLORS[campaign.status]}`}>
+              {STATUS_LABELS[campaign.status]}
+            </span>
+            {campaign.sector && <span className="text-gray-400">{campaign.sector}</span>}
+            {campaign.country && <span className="text-gray-400">· {campaign.country}</span>}
+          </span>
+        }
         actions={
           <div className="flex gap-2">
             <Link href="/campaigns" className="btn-secondary text-xs py-1.5">
               <ArrowLeft className="w-3.5 h-3.5" /> Campañas
             </Link>
-            <Link href={`/imports?campaign=${id}`} className="btn-primary text-xs py-1.5">
-              <Plus className="w-3.5 h-3.5" /> Importar leads
-            </Link>
+            <button onClick={() => setShowAssignModal(true)} className="btn-primary text-xs py-1.5">
+              <Plus className="w-3.5 h-3.5" /> Añadir leads
+            </button>
           </div>
         }
       />
 
-      <div className="p-6 space-y-6">
-        {/* Stats */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-          {[
-            { label: 'Total leads', value: campaign.total_leads, icon: Users, color: 'text-blue-600 bg-blue-50' },
-            { label: 'Contactados', value: campaign.contacted_leads, icon: Mail, color: 'text-purple-600 bg-purple-50' },
-            { label: 'Respondidos', value: campaign.replied_leads, icon: TrendingUp, color: 'text-green-600 bg-green-50' },
-            { label: 'Tasa respuesta', value: `${replyRate}%`, icon: Zap, color: 'text-brand-600 bg-brand-50' },
-          ].map((stat) => (
-            <div key={stat.label} className="card p-4">
-              <div className={`w-8 h-8 rounded-lg ${stat.color} flex items-center justify-center mb-2`}>
-                <stat.icon className="w-4 h-4" />
-              </div>
-              <p className="text-2xl font-bold text-gray-900">{stat.value}</p>
-              <p className="text-xs text-gray-500 mt-0.5">{stat.label}</p>
-            </div>
-          ))}
-        </div>
-
-        {/* Info campaña */}
-        <div className="card p-5">
-          <div className="grid sm:grid-cols-3 gap-4 text-sm">
-            {campaign.description && (
-              <div className="sm:col-span-3">
-                <span className="text-xs text-gray-400 uppercase tracking-wide font-medium">Descripción</span>
-                <p className="text-gray-700 mt-1">{campaign.description}</p>
-              </div>
-            )}
-            {[
-              { label: 'País', value: campaign.country },
-              { label: 'Sector', value: campaign.sector },
-              { label: 'Idioma', value: campaign.language },
-              { label: 'Tipo empresa', value: campaign.target_type },
-              { label: 'Tamaño', value: campaign.target_size },
-              { label: 'Creada', value: formatDate(campaign.created_at) },
-            ].filter(f => f.value).map(field => (
-              <div key={field.label}>
-                <span className="text-xs text-gray-400 uppercase tracking-wide font-medium">{field.label}</span>
-                <p className="text-gray-700 font-medium mt-0.5">{field.value}</p>
-              </div>
+      <div className="p-6 space-y-5">
+        {/* Tabs */}
+        <div className="card overflow-hidden">
+          <div className="flex border-b border-gray-100 overflow-x-auto">
+            {tabs.map(tab => (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={`flex items-center gap-1.5 px-5 py-3 text-xs font-medium whitespace-nowrap border-b-2 transition-colors ${
+                  activeTab === tab.id
+                    ? 'border-brand-500 text-brand-700 bg-brand-50/30'
+                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:bg-gray-50'
+                }`}
+              >
+                <tab.icon className="w-3.5 h-3.5" />
+                {tab.label}
+              </button>
             ))}
-            {campaign.keywords?.length > 0 && (
-              <div className="sm:col-span-3">
-                <span className="text-xs text-gray-400 uppercase tracking-wide font-medium">Keywords</span>
-                <div className="flex flex-wrap gap-1.5 mt-1">
-                  {campaign.keywords.map((kw: string) => (
-                    <span key={kw} className="text-xs bg-brand-50 text-brand-700 px-2 py-0.5 rounded-full">{kw}</span>
-                  ))}
+          </div>
+
+          <div className="p-5">
+            {/* ══ TAB: RESUMEN ══ */}
+            {activeTab === 'overview' && stats && (
+              <div className="space-y-6">
+                {/* KPI Cards */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                  <StatCard label="Total leads" value={stats.leads.total} color="text-blue-600 bg-blue-50" icon={Users} />
+                  <StatCard label="Contactados" value={stats.leads.contacted} sub={`${stats.conversion.contact_rate}% del total`} color="text-purple-600 bg-purple-50" icon={Send} />
+                  <StatCard label="Respondidos" value={stats.leads.replied} sub={`${stats.conversion.reply_rate}% de contactados`} color="text-green-600 bg-green-50" icon={TrendingUp} />
+                  <StatCard label="Reuniones" value={stats.leads.meetings} sub={`${stats.conversion.meeting_rate}% de respuestas`} color="text-brand-600 bg-brand-50" icon={Calendar} />
                 </div>
+
+                <div className="grid lg:grid-cols-2 gap-6">
+                  {/* Funnel de leads */}
+                  <div>
+                    <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Embudo de conversión</h3>
+                    <div className="space-y-3">
+                      <FunnelStep label="Total leads" count={stats.leads.total} total={stats.leads.total} color="bg-gray-400" />
+                      <FunnelStep label="Enriquecidos con IA" count={stats.leads.enriched} total={stats.leads.total} color="bg-brand-400" />
+                      <FunnelStep label="Contactados" count={stats.leads.contacted} total={stats.leads.total} color="bg-purple-500" />
+                      <FunnelStep label="Respondieron" count={stats.leads.replied} total={stats.leads.total} color="bg-blue-500" />
+                      <FunnelStep label="Interesados" count={stats.leads.interested} total={stats.leads.total} color="bg-green-500" />
+                      <FunnelStep label="Reunión conseguida" count={stats.leads.meetings} total={stats.leads.total} color="bg-emerald-500" />
+                      <FunnelStep label="Cerrado" count={stats.leads.closed} total={stats.leads.total} color="bg-teal-600" />
+                    </div>
+                  </div>
+
+                  <div className="space-y-5">
+                    {/* Métricas de email */}
+                    <div>
+                      <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Rendimiento de emails</h3>
+                      <div className="grid grid-cols-2 gap-3">
+                        {[
+                          { label: 'Enviados', value: stats.emails.sent, color: 'bg-gray-50 text-gray-700' },
+                          { label: 'Abiertos', value: `${stats.emails.open_rate}%`, color: 'bg-blue-50 text-blue-700' },
+                          { label: 'Respondidos', value: `${stats.emails.reply_rate}%`, color: 'bg-green-50 text-green-700' },
+                          { label: 'Secuencias activas', value: stats.sequences.active, color: 'bg-brand-50 text-brand-700' },
+                        ].map(m => (
+                          <div key={m.label} className={`rounded-xl p-3 ${m.color}`}>
+                            <p className="text-lg font-bold">{m.value}</p>
+                            <p className="text-xs opacity-70">{m.label}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Objetivos */}
+                    {hasGoals && (
+                      <div>
+                        <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3 flex items-center gap-1.5">
+                          <Target className="w-3.5 h-3.5" /> Objetivos de campaña
+                        </h3>
+                        <div className="space-y-3">
+                          {(campaign.goal_leads ?? 0) > 0 && (
+                            <GoalBar label="Leads contactados" current={stats.leads.contacted} goal={campaign.goal_leads!} color="bg-purple-500" />
+                          )}
+                          {(campaign.goal_replies ?? 0) > 0 && (
+                            <GoalBar label="Respuestas conseguidas" current={stats.leads.replied} goal={campaign.goal_replies!} color="bg-blue-500" />
+                          )}
+                          {(campaign.goal_meetings ?? 0) > 0 && (
+                            <GoalBar label="Reuniones cerradas" current={stats.leads.meetings} goal={campaign.goal_meetings!} color="bg-green-500" />
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Distribución por prioridad */}
+                    <div>
+                      <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Prioridad de leads</h3>
+                      <div className="grid grid-cols-3 gap-2">
+                        {[
+                          { label: 'Alta', count: stats.leads.by_priority.high, color: 'bg-red-100 text-red-700' },
+                          { label: 'Media', count: stats.leads.by_priority.medium, color: 'bg-amber-100 text-amber-700' },
+                          { label: 'Baja', count: stats.leads.by_priority.low, color: 'bg-gray-100 text-gray-600' },
+                        ].map(p => (
+                          <div key={p.label} className={`rounded-xl p-3 text-center ${p.color}`}>
+                            <p className="text-xl font-bold">{p.count}</p>
+                            <p className="text-xs">{p.label}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Fechas */}
+                {(campaign.start_date || campaign.end_date) && (
+                  <div className="flex items-center gap-4 p-3 bg-gray-50 rounded-xl text-xs text-gray-600">
+                    <Calendar className="w-4 h-4 text-gray-400 shrink-0" />
+                    {campaign.start_date && <span>Inicio: <strong>{formatDate(campaign.start_date)}</strong></span>}
+                    {campaign.end_date && <span>Fin: <strong>{formatDate(campaign.end_date)}</strong></span>}
+                    {campaign.start_date && campaign.end_date && (() => {
+                      const start = new Date(campaign.start_date!)
+                      const end = new Date(campaign.end_date!)
+                      const now = new Date()
+                      const total = (end.getTime() - start.getTime())
+                      const elapsed = (now.getTime() - start.getTime())
+                      const pct = Math.max(0, Math.min(100, Math.round((elapsed / total) * 100)))
+                      return <span className="ml-auto text-gray-400">{pct}% del tiempo transcurrido</span>
+                    })()}
+                  </div>
+                )}
               </div>
             )}
-          </div>
-        </div>
 
-        {/* Tabla de leads */}
-        <div className="card">
-          <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
-            <h3 className="text-sm font-semibold text-gray-900">Leads de esta campaña</h3>
-            <Link href={`/leads?campaign=${id}`} className="text-xs text-brand-600 hover:text-brand-700">
-              Ver en CRM →
-            </Link>
+            {/* ══ TAB: LEADS ══ */}
+            {activeTab === 'leads' && (
+              <div className="space-y-4">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-sm text-gray-600">
+                    {leads.length} leads en esta campaña
+                    {selectedToRemove.size > 0 && (
+                      <span className="ml-2 text-red-600">· {selectedToRemove.size} seleccionados</span>
+                    )}
+                  </p>
+                  <div className="flex gap-2">
+                    {selectedToRemove.size > 0 && (
+                      <button
+                        onClick={handleRemoveLeads}
+                        disabled={removing}
+                        className="text-xs px-3 py-1.5 rounded-lg border border-red-200 text-red-600 hover:bg-red-50 flex items-center gap-1.5"
+                      >
+                        {removing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                        Quitar de campaña ({selectedToRemove.size})
+                      </button>
+                    )}
+                    <button onClick={() => setShowAssignModal(true)} className="btn-primary text-xs py-1.5">
+                      <Plus className="w-3.5 h-3.5" /> Añadir leads existentes
+                    </button>
+                    <Link href={`/imports?campaign=${id}`} className="btn-secondary text-xs py-1.5">
+                      <Plus className="w-3.5 h-3.5" /> Importar CSV
+                    </Link>
+                  </div>
+                </div>
+
+                {leads.length === 0 ? (
+                  <div className="py-12 text-center">
+                    <Users className="w-10 h-10 text-gray-200 mx-auto mb-3" />
+                    <p className="text-sm text-gray-500 mb-4">Esta campaña no tiene leads todavía.</p>
+                    <button onClick={() => setShowAssignModal(true)} className="btn-primary text-xs">
+                      <Plus className="w-3.5 h-3.5" /> Añadir leads existentes
+                    </button>
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-gray-100">
+                          <th className="px-3 py-2.5 text-left">
+                            <input
+                              type="checkbox"
+                              className="rounded"
+                              checked={selectedToRemove.size === leads.length && leads.length > 0}
+                              onChange={e => setSelectedToRemove(e.target.checked ? new Set(leads.map(l => l.id)) : new Set())}
+                            />
+                          </th>
+                          {['Empresa', 'Email', 'Estado', 'Prioridad', 'Score', 'Añadido'].map(h => (
+                            <th key={h} className="px-3 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wide">
+                              {h}
+                            </th>
+                          ))}
+                          <th className="px-3 py-2.5" />
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-50">
+                        {leads.map(lead => (
+                          <tr key={lead.id} className={`hover:bg-gray-50 transition-colors ${selectedToRemove.has(lead.id) ? 'bg-red-50' : ''}`}>
+                            <td className="px-3 py-2.5">
+                              <input
+                                type="checkbox"
+                                className="rounded"
+                                checked={selectedToRemove.has(lead.id)}
+                                onChange={e => {
+                                  const s = new Set(selectedToRemove)
+                                  e.target.checked ? s.add(lead.id) : s.delete(lead.id)
+                                  setSelectedToRemove(s)
+                                }}
+                              />
+                            </td>
+                            <td className="px-3 py-2.5">
+                              <Link href={`/leads/${lead.id}`} className="font-medium text-gray-900 hover:text-brand-700 flex items-center gap-1.5">
+                                {lead.company_name}
+                                {lead.is_enriched && <Zap className="w-3 h-3 text-brand-500" />}
+                              </Link>
+                              {lead.sector && <p className="text-xs text-gray-400">{lead.sector}</p>}
+                            </td>
+                            <td className="px-3 py-2.5 text-gray-500 text-xs">{lead.email || '—'}</td>
+                            <td className="px-3 py-2.5">
+                              <span className={`badge ${statusColor(lead.status)}`}>{statusLabel(lead.status)}</span>
+                            </td>
+                            <td className="px-3 py-2.5">
+                              <span className={`badge ${priorityColor(lead.priority)}`}>{lead.priority}</span>
+                            </td>
+                            <td className="px-3 py-2.5">
+                              <span className={`badge font-semibold ${scoreToBg(lead.score)}`}>{lead.score}</span>
+                            </td>
+                            <td className="px-3 py-2.5 text-xs text-gray-400">{formatDate(lead.created_at)}</td>
+                            <td className="px-3 py-2.5">
+                              <Link href={`/leads/${lead.id}`} className="text-xs text-brand-600 hover:text-brand-700">
+                                Ver <ChevronRight className="w-3 h-3 inline" />
+                              </Link>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ══ TAB: SECUENCIAS ══ */}
+            {activeTab === 'sequences' && (() => {
+              // Filtro y paginación client-side
+              const seqTyped = sequences as { id: string; name: string; status: string; current_step: number; created_at: string; lead_id: string; lead?: { id: string; first_name?: string; last_name?: string; company_name: string; email?: string }; sequence_steps?: { id: string; step_number: number; subject: string; body: string; scheduled_for: string; status: string }[] }[]
+              const seqFiltered = seqSearch
+                ? seqTyped.filter(s => {
+                    const q = seqSearch.toLowerCase()
+                    const fullName = [s.lead?.first_name, s.lead?.last_name].filter(Boolean).join(' ').toLowerCase()
+                    const company = (s.lead?.company_name ?? s.name).toLowerCase()
+                    return fullName.includes(q) || company.includes(q)
+                  })
+                : seqTyped
+              const seqTotalPages = Math.ceil(seqFiltered.length / SEQ_PAGE_SIZE)
+              const seqPaged = seqFiltered.slice((seqPage - 1) * SEQ_PAGE_SIZE, seqPage * SEQ_PAGE_SIZE)
+              return (
+              <div className="space-y-4">
+                {/* Cabecera con acciones */}
+                <div className="flex items-center justify-between gap-3 flex-wrap">
+                  <p className="text-sm text-gray-600">{sequences.length} secuencias en esta campaña</p>
+                  <div className="flex items-center gap-2">
+                    {sequences.length > 0 && (
+                      <button
+                        onClick={handleDeleteAllSequences}
+                        disabled={deletingAllSeqs}
+                        className="text-xs px-3 py-1.5 rounded-lg border border-red-200 text-red-600 hover:bg-red-50 flex items-center gap-1.5"
+                      >
+                        {deletingAllSeqs ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                        Borrar todas
+                      </button>
+                    )}
+                    <Link href={`/leads?campaign=${id}`} className="btn-secondary text-xs py-1.5">
+                      <Users className="w-3.5 h-3.5" /> Ver leads
+                    </Link>
+                    <button
+                      onClick={() => { setSeqModalStep('info'); setSeqPreviewSteps([]); setShowSeqModal(true) }}
+                      className="btn-primary text-xs py-1.5"
+                    >
+                      <Sparkles className="w-3.5 h-3.5" /> Iniciar secuencia 3 toques
+                    </button>
+                  </div>
+                </div>
+
+                {/* Buscador */}
+                {sequences.length > 0 && (
+                  <div className="relative">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                    <input
+                      className="input pl-9 text-sm"
+                      placeholder="Buscar por nombre de empresa..."
+                      value={seqSearch}
+                      onChange={e => { setSeqSearch(e.target.value); setSeqPage(1) }}
+                    />
+                  </div>
+                )}
+
+                {/* Reprogramación masiva */}
+                {sequences.length > 0 && (
+                  <div className="p-3 bg-gray-50 border border-gray-200 rounded-xl space-y-2">
+                    <p className="text-xs font-semibold text-gray-600 flex items-center gap-1.5">
+                      <CalendarClock className="w-3.5 h-3.5" /> Reprogramar todas las secuencias
+                    </p>
+                    <div className="grid grid-cols-3 gap-2">
+                      {(['Email inicial', 'Follow-up (+5d)', 'Último intento (+10d)'] as const).map((label, i) => (
+                        <div key={i}>
+                          <p className="text-xs text-gray-500 mb-1">{label}</p>
+                          <input
+                            type="datetime-local"
+                            className="input text-xs py-1"
+                            value={bulkDates[i]}
+                            onChange={e => setBulkDates(prev => { const n = [...prev] as [string,string,string]; n[i] = e.target.value; return n })}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                    <div className="flex justify-end">
+                      <button
+                        onClick={handleApplyBulkDates}
+                        disabled={applyingBulk || bulkDates.every(d => !d)}
+                        className="btn-primary text-xs"
+                      >
+                        {applyingBulk ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Aplicando...</> : <><CalendarClock className="w-3.5 h-3.5" /> Aplicar a todas</>}
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {sequences.length === 0 ? (
+                  <div className="py-10 text-center">
+                    <Mails className="w-10 h-10 text-gray-200 mx-auto mb-3" />
+                    <p className="text-sm text-gray-500">No hay secuencias iniciadas en esta campaña.</p>
+                    <p className="text-xs text-gray-400 mt-1">Pulsa "Iniciar secuencia 3 toques" para generar y revisar los emails antes de enviarlos.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {seqPaged.map(seq => {
+                      const isExpanded = expandedSeqId === seq.id
+                      const steps = seq.sequence_steps ?? []
+                      return (
+                        <div key={seq.id} className={`border rounded-xl overflow-hidden transition-all ${isExpanded ? 'border-brand-300' : 'border-gray-200'}`}>
+                          {/* Cabecera de la secuencia */}
+                          <div className="flex items-center gap-3 p-4 hover:bg-gray-50">
+                            <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${
+                              seq.status === 'active' ? 'bg-green-500' :
+                              seq.status === 'completed' ? 'bg-blue-500' :
+                              seq.status === 'paused' ? 'bg-amber-500' : 'bg-gray-400'
+                            }`} />
+                            <button
+                              className="flex-1 min-w-0 text-left"
+                              onClick={() => setExpandedSeqId(isExpanded ? null : seq.id)}
+                            >
+                              {(seq.lead?.first_name || seq.lead?.last_name) && (
+                                <p className="text-sm font-semibold text-gray-900 truncate">
+                                  {[seq.lead.first_name, seq.lead.last_name].filter(Boolean).join(' ')}
+                                </p>
+                              )}
+                              <p className={`truncate ${(seq.lead?.first_name || seq.lead?.last_name) ? 'text-xs text-gray-500' : 'text-sm font-medium text-gray-900'}`}>
+                                {seq.lead?.company_name ?? seq.name}
+                              </p>
+                              <p className="text-xs text-gray-400">{formatDateRelative(seq.created_at)}</p>
+                            </button>
+                            <span className={`badge shrink-0 ${
+                              seq.status === 'active' ? 'bg-green-100 text-green-700' :
+                              seq.status === 'completed' ? 'bg-blue-100 text-blue-700' :
+                              'bg-gray-100 text-gray-500'
+                            }`}>
+                              {seq.status === 'active' ? 'Activa' :
+                               seq.status === 'completed' ? 'Completada' :
+                               seq.status === 'paused' ? 'Pausada' : seq.status}
+                            </span>
+                            <p className="text-xs text-gray-400 shrink-0">Paso {seq.current_step}</p>
+                            <button
+                              onClick={() => setExpandedSeqId(isExpanded ? null : seq.id)}
+                              className="text-xs px-2 py-1 rounded-lg border border-gray-200 text-gray-500 hover:bg-gray-100 shrink-0 flex items-center gap-1"
+                              title="Ver emails de la secuencia"
+                            >
+                              {isExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                              Emails
+                            </button>
+                            <Link href={`/leads/${seq.lead_id}`} className="text-xs text-brand-600 hover:text-brand-700 shrink-0">
+                              Lead <ChevronRight className="w-3 h-3 inline" />
+                            </Link>
+                            {(seq.status === 'active' || seq.status === 'paused') && (
+                              <button
+                                onClick={() => handleCancelSequence(seq.id)}
+                                disabled={cancellingSeq === seq.id}
+                                className="text-xs px-2.5 py-1 rounded-lg border border-amber-200 text-amber-600 hover:bg-amber-50 shrink-0 flex items-center gap-1"
+                              >
+                                {cancellingSeq === seq.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Pause className="w-3 h-3" />}
+                                Cancelar
+                              </button>
+                            )}
+                            <button
+                              onClick={() => handleDeleteSequence(seq.id)}
+                              disabled={deletingSeq === seq.id}
+                              className="text-xs px-2.5 py-1 rounded-lg border border-red-200 text-red-500 hover:bg-red-50 shrink-0 flex items-center gap-1"
+                            >
+                              {deletingSeq === seq.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
+                              Borrar
+                            </button>
+                          </div>
+
+                          {/* Pasos desplegables */}
+                          {isExpanded && steps.length > 0 && (
+                            <div className="border-t border-gray-100 bg-gray-50/50 divide-y divide-gray-100">
+                              {[...steps].sort((a, b) => a.step_number - b.step_number).map(step => {
+                                const isSent = step.status === 'sent'
+                                const isSkipped = step.status === 'skipped'
+                                const isStepExpanded = expandedStepId === step.id
+                                const edits = stepEdits[step.id] ?? {}
+                                const toLocal = (iso: string) => {
+                                  const d = new Date(iso)
+                                  const pad = (n: number) => String(n).padStart(2, '0')
+                                  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+                                }
+                                const currentDate = edits.scheduled_for ?? (step.scheduled_for ? toLocal(step.scheduled_for) : '')
+                                const currentSubject = edits.subject ?? step.subject
+                                const currentBody = edits.body ?? (step as unknown as Record<string, string>).body ?? ''
+                                const hasChanges = Object.keys(edits).length > 0
+                                const stepLabels = ['Email inicial', 'Follow-up', 'Último intento']
+                                return (
+                                  <div key={step.id} className={`transition-all ${isStepExpanded ? 'bg-white' : ''}`}>
+                                    {/* Cabecera del paso — siempre visible */}
+                                    <button
+                                      className="w-full px-4 py-3 flex items-center gap-3 text-left hover:bg-gray-50 transition-colors"
+                                      onClick={() => setExpandedStepId(isStepExpanded ? null : step.id)}
+                                    >
+                                      <div className={`w-5 h-5 rounded-full flex items-center justify-center shrink-0 text-xs font-bold ${
+                                        isSent ? 'bg-green-500 text-white' :
+                                        isSkipped ? 'bg-gray-300 text-gray-500' :
+                                        'bg-brand-200 text-brand-700'
+                                      }`}>
+                                        {step.step_number}
+                                      </div>
+                                      <div className="flex-1 min-w-0">
+                                        <p className="text-xs font-semibold text-gray-600">{stepLabels[step.step_number - 1]}</p>
+                                        <p className="text-xs text-gray-700 truncate mt-0.5">{currentSubject}</p>
+                                      </div>
+                                      <div className="flex items-center gap-2 shrink-0">
+                                        {step.scheduled_for && (
+                                          <span className="text-xs text-gray-400">
+                                            {new Date(step.scheduled_for).toLocaleDateString('es-ES', { day: 'numeric', month: 'short' })}
+                                            {' '}
+                                            {new Date(step.scheduled_for).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}
+                                          </span>
+                                        )}
+                                        <span className={`text-xs px-1.5 py-0.5 rounded-full font-medium ${
+                                          isSent ? 'bg-green-100 text-green-700' :
+                                          isSkipped ? 'bg-gray-100 text-gray-400' :
+                                          'bg-brand-100 text-brand-700'
+                                        }`}>
+                                          {isSent ? '✓ Enviado' : isSkipped ? 'Omitido' : 'Pendiente'}
+                                        </span>
+                                        {hasChanges && <span className="text-xs text-amber-600 font-medium">● Editado</span>}
+                                        {isStepExpanded ? <ChevronUp className="w-3.5 h-3.5 text-gray-400" /> : <ChevronDown className="w-3.5 h-3.5 text-gray-400" />}
+                                      </div>
+                                    </button>
+
+                                    {/* Contenido expandido del email */}
+                                    {isStepExpanded && (
+                                      <div className="px-4 pb-4 space-y-3 border-t border-gray-100 pt-3">
+                                        <div>
+                                          <label className="label text-xs">Asunto</label>
+                                          <input
+                                            className="input text-sm"
+                                            value={currentSubject}
+                                            disabled={isSent || isSkipped}
+                                            onChange={e => setStepEdits(prev => ({
+                                              ...prev,
+                                              [step.id]: { ...prev[step.id], subject: e.target.value }
+                                            }))}
+                                          />
+                                        </div>
+                                        <div>
+                                          <div className="flex items-center justify-between mb-1">
+                                            <label className="label text-xs">Cuerpo del email</label>
+                                            {!isSent && !isSkipped && (
+                                              <button
+                                                onClick={() => setEditingBodyStepId(editingBodyStepId === step.id ? null : step.id)}
+                                                className="text-xs text-brand-600 hover:underline flex items-center gap-1"
+                                              >
+                                                {editingBodyStepId === step.id ? '👁 Ver preview' : '✏️ Editar texto'}
+                                              </button>
+                                            )}
+                                          </div>
+                                          {editingBodyStepId === step.id && !isSent && !isSkipped ? (
+                                            <textarea
+                                              className="input resize-y text-sm leading-relaxed w-full"
+                                              rows={12}
+                                              placeholder="Escribe el cuerpo del email... (puedes añadir emojis desde tu teclado 😊)"
+                                              value={edits.body !== undefined ? htmlToText(edits.body) : htmlToText(currentBody)}
+                                              onChange={e => setStepEdits(prev => ({
+                                                ...prev,
+                                                [step.id]: { ...prev[step.id], body: textToHtml(e.target.value) }
+                                              }))}
+                                            />
+                                          ) : (
+                                            <div
+                                              className="border border-gray-200 rounded-xl p-4 bg-white text-sm text-gray-800 leading-relaxed min-h-[120px]"
+                                              style={{ fontFamily: 'sans-serif' }}
+                                              dangerouslySetInnerHTML={{ __html: currentBody || '<p class="text-gray-400 text-xs italic">Sin contenido</p>' }}
+                                            />
+                                          )}
+                                        </div>
+                                        {!isSent && !isSkipped && (
+                                          <div>
+                                            <label className="label text-xs flex items-center gap-1">
+                                              <CalendarClock className="w-3.5 h-3.5" /> Fecha y hora de envío
+                                            </label>
+                                            <input
+                                              type="datetime-local"
+                                              className="input text-sm"
+                                              value={currentDate}
+                                              onChange={e => setStepEdits(prev => ({
+                                                ...prev,
+                                                [step.id]: { ...prev[step.id], scheduled_for: e.target.value }
+                                              }))}
+                                            />
+                                          </div>
+                                        )}
+                                        {!isSent && !isSkipped && hasChanges && (
+                                          <div className="flex justify-end gap-2 pt-1">
+                                            <button
+                                              onClick={() => setStepEdits(prev => { const n = { ...prev }; delete n[step.id]; return n })}
+                                              className="btn-secondary text-xs"
+                                            >
+                                              Descartar
+                                            </button>
+                                            <button
+                                              onClick={() => handleSaveStep(step.id)}
+                                              disabled={savingStep === step.id}
+                                              className="btn-primary text-xs"
+                                            >
+                                              {savingStep === step.id
+                                                ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Guardando...</>
+                                                : <><Save className="w-3.5 h-3.5" /> Guardar cambios</>
+                                              }
+                                            </button>
+                                          </div>
+                                        )}
+                                        {(isSent || isSkipped) && (
+                                          <p className="text-xs text-gray-400 italic">Este email ya fue {isSent ? 'enviado' : 'omitido'} y no se puede editar.</p>
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
+                                )
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+
+                {/* Paginación */}
+                {seqTotalPages > 1 && (
+                  <div className="flex items-center justify-between pt-2">
+                    <p className="text-xs text-gray-500">
+                      {seqFiltered.length} resultados · Página {seqPage} de {seqTotalPages}
+                    </p>
+                    <div className="flex gap-1">
+                      <button
+                        onClick={() => setSeqPage(p => Math.max(1, p - 1))}
+                        disabled={seqPage === 1}
+                        className="text-xs px-2.5 py-1 rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-40"
+                      >← Anterior</button>
+                      <button
+                        onClick={() => setSeqPage(p => Math.min(seqTotalPages, p + 1))}
+                        disabled={seqPage === seqTotalPages}
+                        className="text-xs px-2.5 py-1 rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-40"
+                      >Siguiente →</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )})()}
+
+            {/* ══ TAB: AJUSTES ══ */}
+            {activeTab === 'settings' && (
+              <form onSubmit={handleSaveSettings} className="space-y-6 max-w-xl">
+                <div className="space-y-4">
+                  <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Información general</h3>
+                  <div>
+                    <label className="label">Nombre de la campaña</label>
+                    <input className="input" value={editSettings.name ?? ''} onChange={e => setEditSettings(s => ({...s, name: e.target.value}))} required />
+                  </div>
+                  <div>
+                    <label className="label">Descripción</label>
+                    <textarea className="input resize-none" rows={2} value={editSettings.description ?? ''} onChange={e => setEditSettings(s => ({...s, description: e.target.value}))} />
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="label">País objetivo</label>
+                      <input className="input" value={editSettings.country ?? ''} onChange={e => setEditSettings(s => ({...s, country: e.target.value}))} />
+                    </div>
+                    <div>
+                      <label className="label">Sector objetivo</label>
+                      <input className="input" value={editSettings.sector ?? ''} onChange={e => setEditSettings(s => ({...s, sector: e.target.value}))} />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="label">Estado</label>
+                    <select className="input" value={editSettings.status ?? 'draft'} onChange={e => setEditSettings(s => ({...s, status: e.target.value}))}>
+                      {STATUS_OPTIONS.map(st => <option key={st} value={st}>{STATUS_LABELS[st]}</option>)}
+                    </select>
+                  </div>
+                </div>
+
+                <div className="space-y-4 pt-4 border-t border-gray-100">
+                  <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide flex items-center gap-1.5">
+                    <Calendar className="w-3.5 h-3.5" /> Fechas
+                  </h3>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="label">Fecha de inicio</label>
+                      <input type="date" className="input" value={editSettings.start_date ?? ''} onChange={e => setEditSettings(s => ({...s, start_date: e.target.value}))} />
+                    </div>
+                    <div>
+                      <label className="label">Fecha de fin</label>
+                      <input type="date" className="input" value={editSettings.end_date ?? ''} onChange={e => setEditSettings(s => ({...s, end_date: e.target.value}))} />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-4 pt-4 border-t border-gray-100">
+                  <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide flex items-center gap-1.5">
+                    <Target className="w-3.5 h-3.5" /> Objetivos (KPIs)
+                  </h3>
+                  <div className="grid grid-cols-3 gap-4">
+                    <div>
+                      <label className="label">Leads a contactar</label>
+                      <input type="number" min={0} className="input" value={editSettings.goal_leads ?? 0} onChange={e => setEditSettings(s => ({...s, goal_leads: parseInt(e.target.value) || 0}))} />
+                    </div>
+                    <div>
+                      <label className="label">Respuestas objetivo</label>
+                      <input type="number" min={0} className="input" value={editSettings.goal_replies ?? 0} onChange={e => setEditSettings(s => ({...s, goal_replies: parseInt(e.target.value) || 0}))} />
+                    </div>
+                    <div>
+                      <label className="label">Reuniones objetivo</label>
+                      <input type="number" min={0} className="input" value={editSettings.goal_meetings ?? 0} onChange={e => setEditSettings(s => ({...s, goal_meetings: parseInt(e.target.value) || 0}))} />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between pt-4 border-t border-gray-100">
+                  <button type="submit" disabled={savingSettings} className="btn-primary text-xs">
+                    {savingSettings ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Guardando...</> : <><Save className="w-3.5 h-3.5" /> Guardar cambios</>}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleDeleteCampaign}
+                    className="text-xs text-red-500 hover:text-red-700 flex items-center gap-1.5"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" /> Eliminar campaña
+                  </button>
+                </div>
+              </form>
+            )}
           </div>
-          {leads.length === 0 ? (
-            <div className="py-12 text-center">
-              <p className="text-sm text-gray-500 mb-4">Esta campaña no tiene leads todavía.</p>
-              <Link href={`/imports?campaign=${id}`} className="btn-primary text-xs">
-                <Plus className="w-3.5 h-3.5" /> Importar leads CSV
-              </Link>
-            </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-gray-100">
-                    {['Empresa', 'Email', 'Estado', 'Prioridad', 'Score', 'Añadido'].map(h => (
-                      <th key={h} className="px-5 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wide">
-                        {h}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-50">
-                  {leads.map((lead: { id: string; company_name: string; email?: string; status: string; priority: string; score: number; created_at: string; is_enriched?: boolean }) => (
-                    <tr key={lead.id} className="hover:bg-gray-50 transition-colors">
-                      <td className="px-5 py-3">
-                        <Link href={`/leads/${lead.id}`} className="font-medium text-gray-900 hover:text-brand-700">
-                          {lead.company_name}
-                        </Link>
-                        {lead.is_enriched && (
-                          <span className="ml-2 text-xs text-brand-500">✦ IA</span>
-                        )}
-                      </td>
-                      <td className="px-5 py-3 text-gray-500">{lead.email || '—'}</td>
-                      <td className="px-5 py-3">
-                        <span className={`badge ${statusColor(lead.status)}`}>
-                          {statusLabel(lead.status)}
-                        </span>
-                      </td>
-                      <td className="px-5 py-3">
-                        <span className={`badge ${priorityColor(lead.priority)}`}>
-                          {lead.priority}
-                        </span>
-                      </td>
-                      <td className="px-5 py-3">
-                        <span className={`badge font-semibold ${scoreToBg(lead.score)}`}>
-                          {lead.score}
-                        </span>
-                      </td>
-                      <td className="px-5 py-3 text-gray-400 text-xs">
-                        {formatDate(lead.created_at)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
         </div>
       </div>
+
+      {/* ═══ Modal: Lanzar secuencias en bloque ═══ */}
+      <Modal
+        isOpen={showLaunchModal}
+        onClose={() => setShowLaunchModal(false)}
+        title="Lanzar secuencias en bloque"
+        size="md"
+      >
+        <div className="space-y-5">
+          {templates.length > 0 ? (
+            <div className="p-3 bg-green-50 border border-green-100 rounded-xl text-xs text-green-700 flex items-start gap-2">
+              <CheckCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+              <span>Se usará la <strong>secuencia de 3 toques guardada</strong> para todos los leads. El contenido se personalizará automáticamente con el nombre y sector de cada empresa.</span>
+            </div>
+          ) : (
+            <div className="p-3 bg-brand-50 border border-brand-100 rounded-xl text-xs text-brand-700">
+              No hay secuencia guardada — se generará el contenido con IA para cada lead individualmente. Para más velocidad y control, guarda primero la secuencia en la pestaña "3 Toques".
+            </div>
+          )}
+
+          <div>
+            <label className="label">Cuentas de envío (round-robin)</label>
+            <div className="space-y-2 mt-1">
+              {[
+                { email: 'guillaume@mymediaconnect.com',   label: 'Guillaume — MyMediaConnect' },
+                { email: 'guillaume@gomymediaconnect.com', label: 'Guillaume — MyMediaConnect (gomymediaconnect)' },
+                { email: 'guillaume@mymediaconnectgo.com', label: 'Guillaume — MyMediaConnect (mymediaconnectgo)' },
+                { email: 'guillaume@mymediaconnect.es',    label: 'Guillaume — MyMediaConnect (mymediaconnect.es)' },
+              ].map(acc => (
+                <label key={acc.email} className="flex items-center gap-2 cursor-pointer text-sm">
+                  <input
+                    type="checkbox"
+                    checked={launchAccounts.includes(acc.email)}
+                    onChange={e => {
+                      if (e.target.checked) setLaunchAccounts(prev => [...prev, acc.email])
+                      else setLaunchAccounts(prev => prev.filter(a => a !== acc.email))
+                    }}
+                    className="rounded border-gray-300 text-brand-500"
+                  />
+                  <span className="text-gray-700">{acc.label}</span>
+                </label>
+              ))}
+            </div>
+            {launchAccounts.length > 1 && (
+              <p className="text-xs text-gray-400 mt-2">
+                Los leads se repartirán entre {launchAccounts.length} cuentas de forma rotatoria (1 de cada {launchAccounts.length}).
+              </p>
+            )}
+          </div>
+
+          <div className="p-3 bg-amber-50 border border-amber-100 rounded-xl text-xs text-amber-700">
+            ⚠️ Este proceso genera emails con IA para cada lead y puede tardar varios minutos si la campaña tiene muchos leads. No cierres la página.
+          </div>
+
+          <div className="flex gap-2 justify-end">
+            <button onClick={() => setShowLaunchModal(false)} className="btn-secondary text-xs">Cancelar</button>
+            <button
+              onClick={handleBulkLaunch}
+              disabled={launchingBulk || launchAccounts.length === 0}
+              className="btn-primary text-xs"
+            >
+              {launchingBulk
+                ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Generando secuencias...</>
+                : <><Zap className="w-3.5 h-3.5" /> Lanzar secuencias</>
+              }
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* ═══ Modal: asignar leads existentes ═══ */}
+      <Modal
+        isOpen={showAssignModal}
+        onClose={() => { setShowAssignModal(false); setSelectedToAssign(new Set()); setAssignSearch('') }}
+        title="Añadir leads a la campaña"
+        size="lg"
+      >
+        <div className="space-y-4">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+            <input
+              className="input pl-9"
+              placeholder="Buscar por empresa o email..."
+              value={assignSearch}
+              onChange={e => setAssignSearch(e.target.value)}
+              autoFocus
+            />
+          </div>
+
+          {selectedToAssign.size > 0 && (
+            <div className="flex items-center justify-between p-3 bg-brand-50 border border-brand-200 rounded-xl">
+              <span className="text-sm text-brand-700 font-medium">{selectedToAssign.size} lead(s) seleccionados</span>
+              <button onClick={() => setSelectedToAssign(new Set())} className="text-xs text-brand-600 hover:underline">Deseleccionar todo</button>
+            </div>
+          )}
+
+          <div className="max-h-80 overflow-y-auto divide-y divide-gray-50 border border-gray-200 rounded-xl">
+            {loadingAvailable ? (
+              <div className="py-8 text-center"><Loader2 className="w-5 h-5 animate-spin text-gray-400 mx-auto" /></div>
+            ) : availableLeads.length === 0 ? (
+              <div className="py-8 text-center text-sm text-gray-400">No hay leads disponibles para añadir</div>
+            ) : (
+              availableLeads.map(lead => (
+                <div
+                  key={lead.id}
+                  className={`flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-gray-50 transition-colors ${selectedToAssign.has(lead.id) ? 'bg-brand-50' : ''}`}
+                  onClick={() => {
+                    const s = new Set(selectedToAssign)
+                    s.has(lead.id) ? s.delete(lead.id) : s.add(lead.id)
+                    setSelectedToAssign(s)
+                  }}
+                >
+                  <div className={`w-4 h-4 rounded flex items-center justify-center border-2 shrink-0 ${
+                    selectedToAssign.has(lead.id) ? 'bg-brand-600 border-brand-600' : 'border-gray-300'
+                  }`}>
+                    {selectedToAssign.has(lead.id) && <Check className="w-2.5 h-2.5 text-white" />}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-gray-900 truncate">{lead.company_name}</p>
+                    <p className="text-xs text-gray-400">{lead.email || lead.sector || '—'}</p>
+                  </div>
+                  <span className={`badge ${scoreToBg(lead.score)} shrink-0`}>{lead.score}</span>
+                  {lead.campaign_id && (
+                    <span className="text-xs text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded-full shrink-0">Otra campaña</span>
+                  )}
+                </div>
+              ))
+            )}
+          </div>
+
+          <div className="flex gap-2 justify-end">
+            <button
+              onClick={() => { setShowAssignModal(false); setSelectedToAssign(new Set()) }}
+              className="btn-secondary text-xs"
+            >
+              Cancelar
+            </button>
+            <button
+              onClick={handleAssign}
+              disabled={assigning || selectedToAssign.size === 0}
+              className="btn-primary text-xs"
+            >
+              {assigning
+                ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Añadiendo...</>
+                : <><Plus className="w-3.5 h-3.5" /> Añadir {selectedToAssign.size > 0 ? `(${selectedToAssign.size})` : ''}</>
+              }
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* ══ Modal: Secuencia 3 toques campaña (idéntico al lead individual) ══ */}
+      <Modal
+        isOpen={showSeqModal}
+        onClose={() => { setShowSeqModal(false); setSeqModalStep('info'); setSeqPreviewSteps([]) }}
+        title={seqModalStep === 'info' ? 'Secuencia 3 toques — Campaña' : 'Revisar y editar emails de la secuencia'}
+        size="lg"
+      >
+        {seqModalStep === 'info' ? (
+          <div className="space-y-4">
+            <div className="p-4 bg-brand-50 border border-brand-100 rounded-xl text-sm text-brand-800 space-y-2">
+              <p className="font-medium">¿Cómo funciona la secuencia de campaña?</p>
+              <ul className="text-xs space-y-1 text-brand-700">
+                <li>📧 <strong>Email 1</strong> — Se programa para el día siguiente a las 9:00 (o cuando elijas)</li>
+                <li>📧 <strong>Email 2</strong> — Se programa automáticamente 5 días después</li>
+                <li>📧 <strong>Email 3</strong> — Se programa automáticamente 10 días después</li>
+              </ul>
+              <p className="text-xs text-brand-600 mt-2">
+                La IA generará los 3 emails usando el mismo sistema que las secuencias individuales.
+                Podrás revisarlos, editarlos y ajustar la fecha de cada uno antes de guardar como plantilla.
+                Al lanzar la campaña, se usará esta plantilla personalizada para cada lead.
+              </p>
+            </div>
+            <div className="p-3 bg-gray-50 rounded-lg text-xs text-gray-600">
+              <strong>Campaña:</strong> {campaign?.name} · {campaign?.sector ?? 'Sector no definido'} · {campaign?.country ?? 'País no definido'}
+            </div>
+            <div className="flex gap-2 justify-end items-center flex-wrap">
+              <button onClick={() => setShowSeqModal(false)} className="btn-secondary text-xs">Cancelar</button>
+              <button
+                onClick={() => setSeqUseEmojis(e => !e)}
+                className={`btn-secondary text-xs ${seqUseEmojis ? 'border-brand-400 text-brand-600 bg-brand-50' : ''}`}
+                title={seqUseEmojis ? 'Emojis activados — pulsa para desactivar' : 'Sin emojis — pulsa para activar'}
+              >
+                {seqUseEmojis ? '😊 Con emojis' : '🚫 Sin emojis'}
+              </button>
+              <select
+                value={seqLanguage}
+                onChange={e => setSeqLanguage(e.target.value)}
+                className="input text-xs py-1.5 w-36"
+                title="Idioma de los emails generados"
+              >
+                <option value="es">🇪🇸 Español</option>
+                <option value="en">🇬🇧 English</option>
+                <option value="fr">🇫🇷 Français</option>
+                <option value="de">🇩🇪 Deutsch</option>
+                <option value="it">🇮🇹 Italiano</option>
+                <option value="pt">🇵🇹 Português</option>
+                <option value="nl">🇳🇱 Nederlands</option>
+                <option value="ca">🇪🇸 Català</option>
+              </select>
+              <button
+                onClick={handleGenerateCampaignPreview}
+                disabled={generatingTemplate}
+                className="btn-primary text-xs"
+              >
+                {generatingTemplate
+                  ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Generando con IA...</>
+                  : <><Sparkles className="w-3.5 h-3.5" /> Generar y revisar emails</>
+                }
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            <div className="p-3 bg-brand-50 border border-brand-100 rounded-lg text-xs text-brand-800 flex items-start gap-2">
+              <span className="text-base">✏️</span>
+              <span>Revisa y edita los emails. Ajusta <strong>asunto, cuerpo y fecha de envío</strong>. Al guardar, esta secuencia se usará para todos los leads de la campaña.</span>
+            </div>
+
+            <div className="space-y-2">
+              {seqPreviewSteps.map((step, idx) => {
+                const stepLabels = ['Toque 1 — Presentación · Día 0', 'Toque 2 — Follow-up · Día 5', 'Toque 3 — Último intento · Día 10']
+                const isExpanded = expandedSeqStep === step.step_number
+                return (
+                  <div key={step.step_number} className={`border rounded-xl overflow-hidden transition-all ${isExpanded ? 'border-brand-300' : 'border-gray-200'}`}>
+                    <button
+                      className="w-full flex items-center gap-3 p-3 text-left hover:bg-gray-50 transition-colors"
+                      onClick={() => setExpandedSeqStep(isExpanded ? 0 : step.step_number)}
+                    >
+                      <div className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 text-xs font-bold ${step.step_number === 1 ? 'bg-green-500 text-white' : 'bg-brand-200 text-brand-700'}`}>
+                        {step.step_number}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <p className="text-xs font-semibold text-gray-700">{stepLabels[idx]}</p>
+                          {step.scheduled_for && (
+                            <span className="text-xs text-brand-600 bg-brand-50 px-1.5 py-0.5 rounded font-medium shrink-0">
+                              {new Date(step.scheduled_for).toLocaleDateString('es-ES', { day: 'numeric', month: 'short' })}
+                              {' '}
+                              {new Date(step.scheduled_for).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-xs text-gray-500 truncate">{step.subject}</p>
+                      </div>
+                      {isExpanded ? <ChevronUp className="w-4 h-4 text-gray-400 shrink-0" /> : <ChevronDown className="w-4 h-4 text-gray-400 shrink-0" />}
+                    </button>
+
+                    {isExpanded && (
+                      <div className="px-3 pb-3 space-y-2 border-t border-gray-100 pt-3 bg-gray-50/50">
+                        <div>
+                          <label className="label text-xs">Asunto</label>
+                          <input
+                            className="input text-sm"
+                            value={step.subject}
+                            onChange={e => setSeqPreviewSteps(prev => prev.map(s =>
+                              s.step_number === step.step_number ? { ...s, subject: e.target.value } : s
+                            ))}
+                          />
+                        </div>
+                        <div>
+                          <label className="label text-xs">Cuerpo del email</label>
+                          <textarea
+                            className="input resize-y text-sm font-mono text-xs leading-relaxed"
+                            rows={8}
+                            value={step.body}
+                            onChange={e => setSeqPreviewSteps(prev => prev.map(s =>
+                              s.step_number === step.step_number ? { ...s, body: e.target.value } : s
+                            ))}
+                          />
+                        </div>
+                        <div>
+                          <label className="label text-xs flex items-center gap-1">
+                            <CalendarClock className="w-3.5 h-3.5" /> Fecha y hora de envío
+                          </label>
+                          <input
+                            type="datetime-local"
+                            className="input text-sm"
+                            value={step.scheduled_for ?? ''}
+                            onChange={e => setSeqPreviewSteps(prev => prev.map(s =>
+                              s.step_number === step.step_number ? { ...s, scheduled_for: e.target.value } : s
+                            ))}
+                          />
+                          <p className="text-xs text-gray-400 mt-1">
+                            cron-job.org enviará este email automáticamente cuando llegue esta fecha y hora.
+                          </p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+
+            {/* Cuentas de envío */}
+            <div className="p-3 bg-gray-50 border border-gray-200 rounded-xl space-y-2">
+              <p className="text-xs font-semibold text-gray-600 flex items-center gap-1.5">
+                <Mail className="w-3.5 h-3.5" /> Cuentas de envío (round-robin)
+              </p>
+              <div className="grid grid-cols-2 gap-1.5">
+                {[
+                  { email: 'guillaume@mymediaconnect.com',    label: 'Guillaume — mymediaconnect.com' },
+                  { email: 'guillaume@gomymediaconnect.com',  label: 'Guillaume — gomymediaconnect.com' },
+                  { email: 'guillaume@mymediaconnectgo.com',  label: 'Guillaume — mymediaconnectgo.com' },
+                  { email: 'guillaume@mymediaconnect.es',     label: 'Guillaume — mymediaconnect.es' },
+                ].map(acc => (
+                  <label key={acc.email} className="flex items-center gap-1.5 text-xs cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={launchAccounts.includes(acc.email)}
+                      onChange={e => {
+                        if (e.target.checked) setLaunchAccounts(prev => [...prev, acc.email])
+                        else setLaunchAccounts(prev => prev.filter(a => a !== acc.email))
+                      }}
+                      className="rounded border-gray-300 text-brand-500"
+                    />
+                    <span className="text-gray-600 truncate">{acc.label}</span>
+                  </label>
+                ))}
+              </div>
+              {launchAccounts.length > 1 && (
+                <p className="text-xs text-gray-400">Los leads se repartirán entre {launchAccounts.length} cuentas de forma rotatoria.</p>
+              )}
+              {launchAccounts.length === 0 && (
+                <p className="text-xs text-red-500">Selecciona al menos una cuenta de envío.</p>
+              )}
+            </div>
+
+            <div className="flex gap-2 justify-between pt-1">
+              <button
+                onClick={() => { setSeqModalStep('info'); setSeqPreviewSteps([]) }}
+                className="btn-secondary text-xs"
+              >
+                ← Volver
+              </button>
+              <div className="flex gap-2">
+                <button
+                  onClick={handleGenerateCampaignPreview}
+                  disabled={generatingTemplate}
+                  className="btn-secondary text-xs"
+                >
+                  {generatingTemplate ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Regenerando...</> : <><Sparkles className="w-3.5 h-3.5" /> Regenerar</>}
+                </button>
+                <button
+                  onClick={handleConfirmAndLaunch}
+                  disabled={launchingFromModal || launchAccounts.length === 0}
+                  className="btn-primary text-xs"
+                >
+                  {launchingFromModal
+                    ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Lanzando...</>
+                    : <><Zap className="w-3.5 h-3.5" /> Confirmar y lanzar</>
+                  }
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </Modal>
     </div>
   )
 }

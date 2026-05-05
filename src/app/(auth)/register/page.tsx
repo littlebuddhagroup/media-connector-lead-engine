@@ -5,25 +5,37 @@ import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import Image from 'next/image'
-import { Mail, Lock, User } from 'lucide-react'
+import { Mail, Lock, User, KeyRound } from 'lucide-react'
+import { MadeBy } from '@/components/ui/MadeBy'
+
+const REGISTRATION_CODE = 'Bombay66'
 
 export default function RegisterPage() {
   const router = useRouter()
   const [fullName, setFullName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [registrationCode, setRegistrationCode] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState(false)
 
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault()
+    setError('')
+
+    // Validar código de registro
+    if (registrationCode !== REGISTRATION_CODE) {
+      setError('Código de registro incorrecto. Contacta con el administrador para obtenerlo.')
+      return
+    }
+
     if (password.length < 6) {
       setError('La contraseña debe tener al menos 6 caracteres')
       return
     }
+
     setLoading(true)
-    setError('')
 
     const supabase = createClient()
     const { error } = await supabase.auth.signUp({
@@ -44,7 +56,7 @@ export default function RegisterPage() {
 
   if (success) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-brand-950 via-brand-900 to-brand-800 flex items-center justify-center p-4">
+      <div className="relative min-h-screen bg-gradient-to-br from-brand-950 via-brand-900 to-brand-800 flex items-center justify-center p-4">
         <div className="w-full max-w-md">
           <div className="bg-white rounded-2xl p-8 shadow-2xl text-center">
             <div className="w-14 h-14 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
@@ -64,7 +76,7 @@ export default function RegisterPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-brand-950 via-brand-900 to-brand-800 flex items-center justify-center p-4">
+    <div className="relative min-h-screen bg-gradient-to-br from-brand-950 via-brand-900 to-brand-800 flex items-center justify-center p-4">
       <div className="w-full max-w-md">
         <div className="flex justify-center mb-8">
           <Image src="/logo.png" alt="Media Connector" width={220} height={56} className="object-contain" priority />
@@ -80,6 +92,24 @@ export default function RegisterPage() {
           )}
 
           <form onSubmit={handleRegister} className="space-y-4">
+            {/* Código de registro — primer campo visible */}
+            <div>
+              <label className="label">Código de registro</label>
+              <div className="relative">
+                <KeyRound className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                <input
+                  type="password"
+                  value={registrationCode}
+                  onChange={(e) => setRegistrationCode(e.target.value)}
+                  className="input pl-10"
+                  placeholder="Introduce el código de acceso"
+                  required
+                  autoComplete="off"
+                />
+              </div>
+              <p className="text-xs text-gray-400 mt-1">Necesitas un código para crear una cuenta. Pídelo al administrador.</p>
+            </div>
+
             <div>
               <label className="label">Nombre completo</label>
               <div className="relative">
@@ -119,6 +149,9 @@ export default function RegisterPage() {
             </Link>
           </p>
         </div>
+      </div>
+      <div className="absolute bottom-4 left-0 right-0 flex justify-center">
+        <MadeBy />
       </div>
     </div>
   )

@@ -1,14 +1,32 @@
 import { NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/server'
 import { Resend } from 'resend'
+import { runConcurrently } from '@/lib/concurrency'
 
 // ============================================================
 // CRON JOB — Envío automático de follow-ups programados
 // Ejecutar diariamente: vercel.json → crons
+//
+// Optimizado para escala:
+//   - Pre-fetch leads + settings en 2 queries bulk
+//   - runConcurrently(10) para envíos Resend (I/O bound)
+//   - Bulk DB writes al final: inserts + updates en paralelo
+//   - Sin setTimeout delays
 // ============================================================
 
+const REPLIED_STATUSES = ['replied', 'interested', 'meeting_scheduled']
+
+type LeadRow = { id: string; status: string; email: string | null; company_name: string }
+type SettingsRow = { user_id: string; email_from_address: string | null; email_from_name: string | null; email_signature: string | null }
+type FollowUpRow = { id: string; lead_id: string; user_id: string; campaign_id: string | null; subject: string; body: string }
+
+type FollowUpResult =
+  | { type: 'cancelled'; followUpId: string }
+  | { type: 'failed_no_email'; followUpId: string }
+  | { type: 'sent'; followUpId: string; lead_id: string; user_id: string; campaign_id?: string | null; to_email: string; from_email: string; from_name: string; subject: string; body: string; provider_id?: string; email_id?: string }
+  | { type: 'failed'; followUpId: string }
+
 export async function GET(request: Request) {
-  // Verificar token de cron para seguridad
   const authHeader = request.headers.get('authorization')
   const cronSecret = process.env.CRON_SECRET
   if (cronSecret && authHeader !== `Bearer ${cronSecret}`) {
@@ -18,88 +36,74 @@ export async function GET(request: Request) {
   const supabase = createAdminClient()
   const now = new Date().toISOString()
 
-  // Obtener follow-ups pendientes cuya fecha ya ha llegado
+  // Obtener follow-ups pendientes (limit 100)
   const { data: pendingFollowUps, error } = await supabase
     .from('follow_ups')
-    .select('*')
+    .select('id, lead_id, user_id, campaign_id, subject, body')
     .eq('status', 'pending')
     .lte('scheduled_for', now)
-    .limit(50) // Procesar en lotes de 50
+    .limit(100)
 
   if (error) {
     console.error('Error fetching follow-ups:', error)
     return NextResponse.json({ error: error.message }, { status: 500 })
   }
 
-  if (!pendingFollowUps || pendingFollowUps.length === 0) {
+  if (!pendingFollowUps?.length) {
     return NextResponse.json({ message: 'No hay follow-ups pendientes', processed: 0 })
   }
 
+  // ── Pre-fetch leads + settings en 2 queries bulk ──
+  const followUps = pendingFollowUps as FollowUpRow[]
+  const leadIds = [...new Set(followUps.map(f => f.lead_id))]
+  const userIds = [...new Set(followUps.map(f => f.user_id))]
+
+  const [{ data: leadsData }, { data: settingsData }] = await Promise.all([
+    supabase.from('leads').select('id, status, email, company_name').in('id', leadIds),
+    supabase.from('settings')
+      .select('user_id, email_from_address, email_from_name, email_signature')
+      .in('user_id', userIds),
+  ])
+
+  const leadMap = new Map<string, LeadRow>((leadsData ?? []).map((l: LeadRow) => [l.id, l]))
+  const settingsMap = new Map<string, SettingsRow>((settingsData ?? []).map((s: SettingsRow) => [s.user_id, s]))
+
   const resend = new Resend(process.env.RESEND_API_KEY)
-  const fromEmail = process.env.RESEND_FROM_EMAIL ?? ''
-  const fromName = process.env.RESEND_FROM_NAME ?? 'Media Connector'
+  const fromEmailDefault = process.env.RESEND_FROM_EMAIL ?? ''
+  const fromNameDefault = process.env.RESEND_FROM_NAME ?? 'Media Connector'
 
-  let sent = 0
-  let skipped = 0
-  let failed = 0
+  // ── Envíos en paralelo — concurrencia=10 ──
+  const results = await runConcurrently<FollowUpRow, FollowUpResult>(
+    followUps,
+    async (followUp) => {
+      const lead = leadMap.get(followUp.lead_id)
 
-  for (const followUp of pendingFollowUps) {
-    try {
-      // ¿Ha contestado el lead desde que se programó el follow-up?
-      const { data: lead } = await supabase
-        .from('leads')
-        .select('status, email, company_name')
-        .eq('id', followUp.lead_id)
-        .single()
-
-      if (lead?.status === 'replied' || lead?.status === 'interested' || lead?.status === 'meeting_scheduled') {
-        // Lead ya contestó o está interesado — cancelar follow-up
-        await supabase
-          .from('follow_ups')
-          .update({ status: 'cancelled' })
-          .eq('id', followUp.id)
-        skipped++
-        continue
+      // Lead ya contestó — cancelar
+      if (lead && REPLIED_STATUSES.includes(lead.status)) {
+        return { type: 'cancelled', followUpId: followUp.id }
       }
 
-      // Obtener el email destino (del lead o del follow-up original)
       const toEmail = lead?.email
-      if (!toEmail) {
-        await supabase
-          .from('follow_ups')
-          .update({ status: 'failed' })
-          .eq('id', followUp.id)
-        failed++
-        continue
-      }
+      if (!toEmail) return { type: 'failed_no_email', followUpId: followUp.id }
 
-      // Obtener settings del usuario para el from
-      const { data: settings } = await supabase
-        .from('settings')
-        .select('email_from_address, email_from_name, email_signature')
-        .eq('user_id', followUp.user_id)
-        .single()
-
-      const from = settings?.email_from_address || fromEmail
-      const name = settings?.email_from_name || fromName
+      const settings = settingsMap.get(followUp.user_id)
+      const from = settings?.email_from_address || fromEmailDefault
+      const name = settings?.email_from_name || fromNameDefault
       let body = followUp.body
-      if (settings?.email_signature) {
-        body += `\n\n--\n${settings.email_signature}`
-      }
+      if (settings?.email_signature) body += `\n\n--\n${settings.email_signature}`
 
-      // Enviar el email
-      const result = await resend.emails.send({
-        from: `${name} <${from}>`,
-        to: toEmail,
-        subject: followUp.subject,
-        text: body,
-        html: body.replace(/\n/g, '<br>'),
-      })
+      try {
+        const result = await resend.emails.send({
+          from: `${name} <${from}>`,
+          to: toEmail,
+          subject: followUp.subject,
+          text: body,
+          html: body.replace(/\n/g, '<br>'),
+        })
 
-      // Guardar en tabla emails
-      const { data: emailRecord } = await supabase
-        .from('emails')
-        .insert({
+        return {
+          type: 'sent',
+          followUpId: followUp.id,
           lead_id: followUp.lead_id,
           user_id: followUp.user_id,
           campaign_id: followUp.campaign_id,
@@ -107,61 +111,100 @@ export async function GET(request: Request) {
           from_email: from,
           from_name: name,
           subject: followUp.subject,
-          body: body,
-          status: 'sent',
-          provider: 'resend',
+          body,
           provider_id: result.data?.id,
-          sent_at: new Date().toISOString(),
-        })
-        .select()
-        .single()
+        }
+      } catch (err) {
+        console.error(`Error sending follow-up ${followUp.id}:`, err)
+        return { type: 'failed', followUpId: followUp.id }
+      }
+    },
+    10
+  )
 
-      // Actualizar estado del follow-up
-      await supabase
-        .from('follow_ups')
-        .update({
-          status: 'sent',
-          sent_at: new Date().toISOString(),
-        })
-        .eq('id', followUp.id)
+  // ── Separar resultados ──
+  const sentResults = results.filter((r): r is Extract<FollowUpResult, { type: 'sent' }> => r.type === 'sent')
+  const cancelledIds = results.filter(r => r.type === 'cancelled').map(r => r.followUpId)
+  const failedIds = results.filter(r => r.type === 'failed' || r.type === 'failed_no_email').map(r => r.followUpId)
 
-      // Registrar actividad
-      await supabase.from('activity_logs').insert({
-        lead_id: followUp.lead_id,
-        user_id: followUp.user_id,
-        campaign_id: followUp.campaign_id,
-        type: 'email_sent',
-        title: `Follow-up automático enviado: "${followUp.subject}"`,
-        description: `Para: ${toEmail}`,
-        metadata: { provider_id: result.data?.id, email_id: emailRecord?.id },
-      })
+  const sentAt = new Date().toISOString()
+  const bulkOps: Promise<unknown>[] = []
 
-      // Actualizar estado del lead a 'contacted' si estaba en 'new'
-      await supabase
-        .from('leads')
-        .update({ status: 'contacted' })
-        .eq('id', followUp.lead_id)
-        .eq('status', 'new')
-
-      sent++
-    } catch (err) {
-      console.error(`Error sending follow-up ${followUp.id}:`, err)
-      await supabase
-        .from('follow_ups')
-        .update({ status: 'failed' })
-        .eq('id', followUp.id)
-      failed++
-    }
-
-    // Pausa entre envíos para evitar rate limits
-    await new Promise(r => setTimeout(r, 300))
+  // ── 1. Bulk insert email records + obtener IDs ──
+  let emailRecords: Array<{ id: string }> = []
+  if (sentResults.length > 0) {
+    const { data } = await supabase
+      .from('emails')
+      .insert(sentResults.map(r => ({
+        lead_id: r.lead_id,
+        user_id: r.user_id,
+        campaign_id: r.campaign_id ?? null,
+        to_email: r.to_email,
+        from_email: r.from_email,
+        from_name: r.from_name,
+        subject: r.subject,
+        body: r.body,
+        status: 'sent',
+        provider: 'resend',
+        provider_id: r.provider_id,
+        sent_at: sentAt,
+      })))
+      .select('id')
+    emailRecords = data ?? []
   }
+
+  // ── 2. Bulk update follow-ups por estado ──
+  if (sentResults.length > 0) {
+    bulkOps.push(
+      supabase.from('follow_ups')
+        .update({ status: 'sent', sent_at: sentAt })
+        .in('id', sentResults.map(r => r.followUpId))
+    )
+  }
+  if (cancelledIds.length > 0) {
+    bulkOps.push(
+      supabase.from('follow_ups').update({ status: 'cancelled' }).in('id', cancelledIds)
+    )
+  }
+  if (failedIds.length > 0) {
+    bulkOps.push(
+      supabase.from('follow_ups').update({ status: 'failed' }).in('id', failedIds)
+    )
+  }
+
+  // ── 3. Bulk insert activity logs ──
+  if (sentResults.length > 0) {
+    bulkOps.push(
+      supabase.from('activity_logs').insert(
+        sentResults.map((r, i) => ({
+          lead_id: r.lead_id,
+          user_id: r.user_id,
+          campaign_id: r.campaign_id ?? null,
+          type: 'email_sent',
+          title: `Follow-up automático enviado: "${r.subject}"`,
+          description: `Para: ${r.to_email}`,
+          metadata: { provider_id: r.provider_id, email_id: emailRecords[i]?.id },
+        }))
+      )
+    )
+  }
+
+  // ── 4. Marcar leads como contactados si estaban en 'new' ──
+  const uniqueLeadIds = [...new Set(sentResults.map(r => r.lead_id))]
+  if (uniqueLeadIds.length > 0) {
+    bulkOps.push(
+      supabase.from('leads').update({ status: 'contacted' }).in('id', uniqueLeadIds).eq('status', 'new')
+    )
+  }
+
+  // Ejecutar TODAS las operaciones DB en paralelo
+  await Promise.all(bulkOps)
 
   return NextResponse.json({
     message: 'Follow-ups procesados',
     processed: pendingFollowUps.length,
-    sent,
-    skipped,
-    failed,
+    sent: sentResults.length,
+    skipped: cancelledIds.length,
+    failed: failedIds.length,
   })
 }

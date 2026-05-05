@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import TopBar from '@/components/layout/TopBar'
-import { Search, Plus, CheckCircle, ExternalLink, Loader2, User, Building2, Briefcase, Globe } from 'lucide-react'
+import { Search, Plus, CheckCircle, ExternalLink, Loader2, User, Building2, Briefcase, Globe, LayoutList } from 'lucide-react'
 import { toast } from '@/components/ui/Toast'
 import type { Campaign } from '@/types'
 
@@ -144,9 +144,18 @@ function MultiTag({
 }
 
 export default function ApolloPage() {
+  // Modo de búsqueda: 'sector' (por cargo/sector) o 'company' (por empresa)
+  const [searchMode, setSearchMode] = useState<'sector' | 'company'>('sector')
+
+  // Modo sector
   const [jobTitles, setJobTitles] = useState<string[]>(['Marketing Director', 'Brand Manager'])
   const [industries, setIndustries] = useState<string[]>(['food and beverage', 'consumer goods'])
   const [countries, setCountries] = useState<string[]>(['Spain'])
+
+  // Modo empresa
+  const [companyQuery, setCompanyQuery] = useState('')
+  const [companyDomain, setCompanyDomain] = useState('')
+
   const [perPage, setPerPage] = useState(20)
   const [campaignId, setCampaignId] = useState('')
   const [campaigns, setCampaigns] = useState<Campaign[]>([])
@@ -168,15 +177,14 @@ export default function ApolloPage() {
     setResults([])
     setSearched(true)
 
+    const body = searchMode === 'company'
+      ? { mode: 'company', company_name: companyQuery, company_domain: companyDomain, per_page: perPage }
+      : { job_titles: jobTitles, industries, countries, per_page: perPage }
+
     const res = await fetch('/api/apollo', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        job_titles: jobTitles,
-        industries,
-        countries,
-        per_page: perPage,
-      }),
+      body: JSON.stringify(body),
     })
     const json = await res.json()
     setLoading(false)
@@ -231,62 +239,123 @@ export default function ApolloPage() {
 
       <div className="p-6 space-y-6">
         {/* Formulario */}
-        <div className="card p-5 space-y-5">
-          <form onSubmit={handleSearch}>
-            {/* Cargos */}
-            <div className="mb-4">
-              <label className="label mb-2 flex items-center gap-1.5">
-                <Briefcase className="w-3.5 h-3.5" /> Cargos a buscar
-              </label>
-              <MultiTag
-                values={jobTitles}
-                suggestions={JOB_TITLE_PRESETS}
-                placeholder='Ej: "Director de Marketing"'
-                onChange={setJobTitles}
-              />
-            </div>
+        <div className="card p-5">
+          {/* Toggle de modo */}
+          <div className="flex gap-1 p-1 bg-gray-100 rounded-xl mb-5 w-fit">
+            <button
+              onClick={() => { setSearchMode('sector'); setResults([]); setSearched(false) }}
+              className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-medium transition-all ${
+                searchMode === 'sector'
+                  ? 'bg-white text-brand-700 shadow-sm'
+                  : 'text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              <LayoutList className="w-3.5 h-3.5" /> Por sector y cargo
+            </button>
+            <button
+              onClick={() => { setSearchMode('company'); setResults([]); setSearched(false) }}
+              className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-medium transition-all ${
+                searchMode === 'company'
+                  ? 'bg-white text-brand-700 shadow-sm'
+                  : 'text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              <Building2 className="w-3.5 h-3.5" /> Por empresa
+            </button>
+          </div>
 
-            {/* Sectores */}
-            <div className="mb-4">
-              <label className="label mb-2 flex items-center gap-1.5">
-                <Building2 className="w-3.5 h-3.5" /> Sectores / Industrias
-              </label>
-              <MultiTag
-                values={industries}
-                suggestions={INDUSTRY_PRESETS}
-                placeholder='Ej: "Food & Beverages"'
-                onChange={setIndustries}
-              />
-            </div>
+          <form onSubmit={handleSearch} className="space-y-4">
 
-            {/* Países */}
-            <div className="mb-5">
-              <label className="label mb-2 flex items-center gap-1.5">
-                <Globe className="w-3.5 h-3.5" /> Países
-              </label>
-              <div className="flex flex-wrap gap-2 mb-2">
-                {COUNTRY_PRESETS.map(c => (
-                  <button
-                    key={c.value}
-                    type="button"
-                    onClick={() => {
-                      if (countries.includes(c.value)) {
-                        setCountries(countries.filter(x => x !== c.value))
-                      } else {
-                        setCountries([...countries, c.value])
-                      }
-                    }}
-                    className={`text-xs px-3 py-1.5 rounded-full border transition-all ${
-                      countries.includes(c.value)
-                        ? 'bg-brand-600 text-white border-brand-600'
-                        : 'bg-white text-gray-600 border-gray-200 hover:border-brand-300'
-                    }`}
-                  >
-                    {c.label}
-                  </button>
-                ))}
+            {searchMode === 'sector' ? (
+              <>
+                {/* Cargos */}
+                <div>
+                  <label className="label mb-2 flex items-center gap-1.5">
+                    <Briefcase className="w-3.5 h-3.5" /> Cargos a buscar
+                  </label>
+                  <MultiTag
+                    values={jobTitles}
+                    suggestions={JOB_TITLE_PRESETS}
+                    placeholder='Ej: "Director de Marketing"'
+                    onChange={setJobTitles}
+                  />
+                </div>
+
+                {/* Sectores */}
+                <div>
+                  <label className="label mb-2 flex items-center gap-1.5">
+                    <Building2 className="w-3.5 h-3.5" /> Sectores / Industrias
+                  </label>
+                  <MultiTag
+                    values={industries}
+                    suggestions={INDUSTRY_PRESETS}
+                    placeholder='Ej: "Food & Beverages"'
+                    onChange={setIndustries}
+                  />
+                </div>
+
+                {/* Países */}
+                <div>
+                  <label className="label mb-2 flex items-center gap-1.5">
+                    <Globe className="w-3.5 h-3.5" /> Países
+                  </label>
+                  <div className="flex flex-wrap gap-2">
+                    {COUNTRY_PRESETS.map(c => (
+                      <button
+                        key={c.value}
+                        type="button"
+                        onClick={() => {
+                          if (countries.includes(c.value)) {
+                            setCountries(countries.filter(x => x !== c.value))
+                          } else {
+                            setCountries([...countries, c.value])
+                          }
+                        }}
+                        className={`text-xs px-3 py-1.5 rounded-full border transition-all ${
+                          countries.includes(c.value)
+                            ? 'bg-brand-600 text-white border-brand-600'
+                            : 'bg-white text-gray-600 border-gray-200 hover:border-brand-300'
+                        }`}
+                      >
+                        {c.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </>
+            ) : (
+              /* Modo búsqueda por empresa */
+              <div className="space-y-4">
+                <div className="p-3 bg-brand-50 border border-brand-100 rounded-xl text-xs text-brand-700">
+                  Introduce el nombre o dominio de una empresa y Apollo buscará sus contactos de marketing y dirección.
+                </div>
+                <div>
+                  <label className="label">Nombre de la empresa</label>
+                  <div className="relative">
+                    <Building2 className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                    <input
+                      className="input pl-9"
+                      placeholder='Ej: "Mahou San Miguel", "Nestlé España"...'
+                      value={companyQuery}
+                      onChange={e => setCompanyQuery(e.target.value)}
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="label">Dominio web <span className="text-gray-400 font-normal">(opcional, más preciso)</span></label>
+                  <div className="relative">
+                    <Globe className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                    <input
+                      className="input pl-9"
+                      placeholder='Ej: mahou.es, nestle.com...'
+                      value={companyDomain}
+                      onChange={e => setCompanyDomain(e.target.value)}
+                    />
+                  </div>
+                  <p className="text-xs text-gray-400 mt-1">Si introduces el dominio, los resultados serán mucho más precisos.</p>
+                </div>
               </div>
-            </div>
+            )}
 
             {/* Opciones adicionales */}
             <div className="flex items-end gap-4 pt-4 border-t border-gray-100">
@@ -307,7 +376,11 @@ export default function ApolloPage() {
               </div>
               <button
                 type="submit"
-                disabled={loading || (jobTitles.length === 0 && industries.length === 0)}
+                disabled={
+                  loading ||
+                  (searchMode === 'sector' && jobTitles.length === 0 && industries.length === 0) ||
+                  (searchMode === 'company' && !companyQuery.trim() && !companyDomain.trim())
+                }
                 className="btn-primary ml-auto text-sm px-6"
               >
                 {loading

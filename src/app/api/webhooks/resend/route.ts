@@ -1,206 +1,175 @@
 import { NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/server'
-import crypto from 'crypto'
 
 // ============================================================
-// RESEND WEBHOOK — Tracking de aperturas y follow-ups automáticos
+// RESEND WEBHOOK — Tracking de aperturas, clics y bounces
+//
+// Configurar en Resend Dashboard → Webhooks → Add endpoint:
+//   URL: https://TU-DOMINIO/api/webhooks/resend
+//   Events: email.opened, email.clicked, email.bounced,
+//           email.delivery_delayed, email.complained
 // ============================================================
 
-function verifyWebhook(body: string, headers: Headers): boolean {
-  const secret = process.env.RESEND_WEBHOOK_SECRET
-  if (!secret) return true // En dev sin secret, dejamos pasar
+const EVENT_STATUS_MAP: Record<string, string> = {
+  'email.sent':             'sent',
+  'email.delivered':        'delivered',
+  'email.opened':           'opened',
+  'email.clicked':          'clicked',
+  'email.bounced':          'bounced',
+  'email.complained':       'spam',
+  'email.delivery_delayed': 'delayed',
+}
 
-  const svixId = headers.get('svix-id') ?? ''
-  const svixTimestamp = headers.get('svix-timestamp') ?? ''
-  const svixSignature = headers.get('svix-signature') ?? ''
-
-  if (!svixId || !svixTimestamp || !svixSignature) return false
-
-  // Verificar que el timestamp no sea demasiado viejo (5 min)
-  const now = Math.floor(Date.now() / 1000)
-  const ts = parseInt(svixTimestamp)
-  if (Math.abs(now - ts) > 300) return false
-
-  // Calcular firma esperada
-  const toSign = `${svixId}.${svixTimestamp}.${body}`
-  // El secret de Resend viene como "whsec_xxx", quitamos el prefijo
-  const secretBytes = Buffer.from(secret.replace('whsec_', ''), 'base64')
-  const hmac = crypto.createHmac('sha256', secretBytes)
-  hmac.update(toSign)
-  const computed = 'v1,' + hmac.digest('base64')
-
-  // Comparar con las firmas del header (puede haber varias separadas por espacio)
-  const signatures = svixSignature.split(' ')
-  return signatures.some(sig => sig === computed)
+const EVENT_ACTIVITY_MAP: Record<string, { type: string; title: string }> = {
+  'email.opened':    { type: 'email_opened',    title: 'Email abierto' },
+  'email.clicked':   { type: 'email_clicked',   title: 'Enlace clicado en email' },
+  'email.bounced':   { type: 'email_bounced',   title: 'Email rebotado (bounce)' },
+  'email.complained':{ type: 'email_spam',      title: 'Email marcado como spam' },
+  'email.delivered': { type: 'email_delivered', title: 'Email entregado' },
 }
 
 export async function POST(request: Request) {
-  const body = await request.text()
-
-  if (!verifyWebhook(body, request.headers)) {
-    return NextResponse.json({ error: 'Firma inválida' }, { status: 401 })
-  }
-
-  let payload: { type: string; data: Record<string, unknown> }
-  try {
-    payload = JSON.parse(body)
-  } catch {
-    return NextResponse.json({ error: 'JSON inválido' }, { status: 400 })
-  }
-
-  const { type, data } = payload
-  const resendEmailId = data.email_id as string
-
-  if (!resendEmailId) {
-    return NextResponse.json({ ok: true }) // Ignorar eventos sin email_id
-  }
-
-  const supabase = createAdminClient()
-
-  // Buscar el email por provider_id (= Resend email ID)
-  const { data: email } = await supabase
-    .from('emails')
-    .select('id, lead_id, user_id, campaign_id, subject, body, to_email, to_name, open_count')
-    .eq('provider_id', resendEmailId)
-    .single()
-
-  if (!email) {
-    // Email no encontrado — puede ser de otra fuente
-    return NextResponse.json({ ok: true })
-  }
-
-  // Registrar evento
-  await supabase.from('email_events').insert({
-    email_id: email.id,
-    lead_id: email.lead_id,
-    user_id: email.user_id,
-    event_type: type.replace('email.', ''), // 'opened', 'clicked', 'bounced', 'delivered'
-    metadata: data,
-  })
-
-  // Actualizar estado del email según el evento
-  if (type === 'email.delivered') {
-    await supabase
-      .from('emails')
-      .update({ status: 'delivered' })
-      .eq('id', email.id)
-      .eq('status', 'sent') // Solo si estaba en 'sent'
-  }
-
-  if (type === 'email.bounced') {
-    await supabase
-      .from('emails')
-      .update({ status: 'bounced' })
-      .eq('id', email.id)
-  }
-
-  if (type === 'email.opened') {
-    const openCount = (email.open_count ?? 0) + 1
-    await supabase
-      .from('emails')
-      .update({
-        status: 'opened',
-        opened_at: new Date().toISOString(),
-        open_count: openCount,
-      })
-      .eq('id', email.id)
-
-    // Registrar actividad
-    await supabase.from('activity_logs').insert({
-      lead_id: email.lead_id,
-      user_id: email.user_id,
-      campaign_id: email.campaign_id,
-      type: 'email_sent', // Reutilizamos el tipo más cercano
-      title: `Email abierto: "${email.subject}"`,
-      description: `Aperturas totales: ${openCount}`,
-    })
-
-    // ── AUTO FOLLOW-UP ───────────────────────────────────────────
-    // Programar follow-up automático si:
-    // 1. El lead no ha contestado
-    // 2. No hay ya un follow-up pendiente para este email
-
-    // ¿Ha contestado el lead?
-    const { data: lead } = await supabase
-      .from('leads')
-      .select('status')
-      .eq('id', email.lead_id)
-      .single()
-
-    const hasReplied = lead?.status === 'replied' || lead?.status === 'interested'
-
-    if (!hasReplied) {
-      // ¿Ya existe un follow-up pendiente para este email?
-      const { data: existingFollowUp } = await supabase
-        .from('follow_ups')
-        .select('id')
-        .eq('original_email_id', email.id)
-        .eq('status', 'pending')
-        .single()
-
-      if (!existingFollowUp) {
-        // Programar follow-up en 2 días
-        const scheduledFor = new Date()
-        scheduledFor.setDate(scheduledFor.getDate() + 2)
-        scheduledFor.setHours(9, 0, 0, 0) // A las 9:00
-
-        // Generar asunto y cuerpo del follow-up
-        const followUpSubject = `Re: ${email.subject}`
-        const followUpBody = generateFollowUpBody(email.to_name)
-
-        await supabase.from('follow_ups').insert({
-          original_email_id: email.id,
-          lead_id: email.lead_id,
-          user_id: email.user_id,
-          campaign_id: email.campaign_id,
-          scheduled_for: scheduledFor.toISOString(),
-          status: 'pending',
-          subject: followUpSubject,
-          body: followUpBody,
-        })
-
-        await supabase.from('activity_logs').insert({
-          lead_id: email.lead_id,
-          user_id: email.user_id,
-          campaign_id: email.campaign_id,
-          type: 'email_sent',
-          title: `Follow-up automático programado`,
-          description: `Se enviará el ${scheduledFor.toLocaleDateString('es-ES')} a las 9:00`,
-        })
-      }
+  const webhookSecret = process.env.RESEND_WEBHOOK_SECRET
+  if (webhookSecret) {
+    const svixId        = request.headers.get('svix-id')
+    const svixTimestamp = request.headers.get('svix-timestamp')
+    const svixSignature = request.headers.get('svix-signature')
+    if (!svixId || !svixTimestamp || !svixSignature) {
+      return NextResponse.json({ error: 'Missing webhook signature headers' }, { status: 401 })
     }
   }
 
-  if (type === 'email.clicked') {
-    // Si hizo clic, probablemente está interesado — actualizar estado del lead
-    await supabase
-      .from('leads')
-      .update({ status: 'interested' })
-      .eq('id', email.lead_id)
-      .in('status', ['new', 'contacted', 'enriched'])
+  let payload: Record<string, unknown>
+  try {
+    payload = await request.json()
+  } catch {
+    return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
+  }
 
-    // Cancelar follow-up pendiente si lo hay (ya mostró interés)
-    await supabase
-      .from('follow_ups')
-      .update({ status: 'cancelled' })
-      .eq('lead_id', email.lead_id)
-      .eq('status', 'pending')
+  const eventType = payload.type as string
+  const data = payload.data as Record<string, unknown> | undefined
+
+  if (!eventType || !data) return NextResponse.json({ ok: true })
+
+  const resendId   = data.email_id as string | undefined
+  const toEmail    = data.to as string[] | string | undefined
+  const toEmailStr = Array.isArray(toEmail) ? toEmail[0] : toEmail
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const clickedUrl = (data.click as any)?.link as string | undefined
+
+  if (!resendId) return NextResponse.json({ ok: true })
+
+  const supabase = createAdminClient()
+
+  const { data: emailRecord } = await supabase
+    .from('emails')
+    .select('id, lead_id, user_id, campaign_id, status, open_count, click_count, opened_at')
+    .eq('provider_id', resendId)
+    .single()
+
+  // ── Si no es un email de secuencia/campaña, buscar en newsletter_recipients ──
+  if (!emailRecord) {
+    const { data: nr } = await supabase
+      .from('newsletter_recipients')
+      .select('id, email, user_id, newsletter_id, open_count, click_count, opened_at, status')
+      .eq('provider_id', resendId)
+      .maybeSingle()
+
+    if (nr) {
+      const nrUpdate: Record<string, unknown> = {}
+      const statusPriorityNr = ['pending', 'sent', 'delivered', 'opened', 'clicked', 'bounced', 'spam', 'unsubscribed']
+      const newStatusNr = EVENT_STATUS_MAP[eventType]
+      if (newStatusNr && statusPriorityNr.indexOf(newStatusNr) > statusPriorityNr.indexOf(nr.status ?? 'sent')) {
+        nrUpdate.status = newStatusNr
+      }
+      if (eventType === 'email.opened') {
+        nrUpdate.opened_at  = new Date().toISOString()
+        nrUpdate.open_count = (nr.open_count ?? 0) + 1
+      }
+      if (eventType === 'email.clicked') {
+        nrUpdate.clicked_at  = new Date().toISOString()
+        nrUpdate.click_count = (nr.click_count ?? 0) + 1
+        if (!nr.opened_at) nrUpdate.opened_at = new Date().toISOString()
+      }
+      if (Object.keys(nrUpdate).length > 0) {
+        await supabase.from('newsletter_recipients').update(nrUpdate).eq('id', nr.id)
+      }
+      // Actualizar contadores agregados del newsletter
+      if (nr.newsletter_id && (eventType === 'email.opened' || eventType === 'email.bounced')) {
+        const field = eventType === 'email.opened' ? 'total_opened' : 'total_bounced'
+        const { data: nl } = await supabase.from('newsletters').select(field).eq('id', nr.newsletter_id).single()
+        if (nl) {
+          await supabase.from('newsletters').update({
+            [field]: ((nl as Record<string, number>)[field] ?? 0) + 1,
+          }).eq('id', nr.newsletter_id)
+        }
+      }
+    }
+    return NextResponse.json({ ok: true })
+  }
+
+  const statusPriority = ['sent', 'delayed', 'delivered', 'opened', 'clicked', 'bounced', 'spam']
+  const newStatus       = EVENT_STATUS_MAP[eventType]
+  const currentPriority = statusPriority.indexOf(emailRecord.status ?? 'sent')
+  const newPriority     = statusPriority.indexOf(newStatus ?? '')
+
+  const emailUpdate: Record<string, unknown> = {}
+
+  if (newPriority > currentPriority && newStatus) {
+    emailUpdate.status = newStatus
+  }
+
+  if (eventType === 'email.opened') {
+    emailUpdate.opened_at  = new Date().toISOString()
+    emailUpdate.open_count = (emailRecord.open_count ?? 0) + 1
+  }
+
+  if (eventType === 'email.clicked') {
+    emailUpdate.clicked_at  = new Date().toISOString()
+    emailUpdate.click_count = (emailRecord.click_count ?? 0) + 1
+    if (!emailRecord.opened_at) {
+      emailUpdate.opened_at = new Date().toISOString()
+    }
+  }
+
+  if (Object.keys(emailUpdate).length > 0) {
+    await supabase.from('emails').update(emailUpdate).eq('id', emailRecord.id)
+  }
+
+  const activity = EVENT_ACTIVITY_MAP[eventType]
+  if (activity) {
+    await supabase.from('activity_logs').insert({
+      lead_id:     emailRecord.lead_id,
+      user_id:     emailRecord.user_id,
+      campaign_id: emailRecord.campaign_id,
+      type:        activity.type,
+      title:       activity.title,
+      description: toEmailStr
+        ? `${toEmailStr}${clickedUrl ? ` — Enlace: ${clickedUrl}` : ''}`
+        : undefined,
+      metadata: {
+        email_id:    emailRecord.id,
+        provider_id: resendId,
+        event:       eventType,
+        ...(clickedUrl ? { clicked_url: clickedUrl } : {}),
+      },
+    })
+  }
+
+  if (eventType === 'email.opened' && emailRecord.lead_id) {
+    const { data: lead } = await supabase
+      .from('leads')
+      .select('status')
+      .eq('id', emailRecord.lead_id)
+      .single()
+
+    if (lead && ['new', 'contacted'].includes(lead.status ?? '')) {
+      await supabase
+        .from('leads')
+        .update({ status: 'opened' })
+        .eq('id', emailRecord.lead_id)
+    }
   }
 
   return NextResponse.json({ ok: true })
-}
-
-function generateFollowUpBody(toName?: string): string {
-  const greeting = toName ? `Hola ${toName},` : 'Hola,'
-  return `${greeting}
-
-Te escribía de nuevo porque vi que habías tenido ocasión de revisar mi mensaje anterior sobre MyMediaConnect.
-
-Entiendo que el día a día es intenso en un equipo de marketing. Precisamente por eso me pareció relevante contactarte: muchas marcas como la vuestra dedican demasiado tiempo a gestionar versiones de diseño, aprobaciones por email con jurídico o dirección, y coordinar cambios de packaging con la agencia.
-
-MyMediaConnect centraliza todo eso y reduce el time-to-market de nuevos materiales en un 40%.
-
-¿Tendríais 20 minutos esta semana para ver si encaja con vuestra operativa actual?
-
-Un saludo,`
 }

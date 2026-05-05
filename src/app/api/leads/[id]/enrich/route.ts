@@ -10,9 +10,9 @@ export async function POST(_req: Request, { params }: Params) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'No autenticado' }, { status: 401 })
 
-  if (!process.env.OPENAI_API_KEY) {
+  if (!process.env.GEMINI_API_KEY) {
     return NextResponse.json(
-      { error: 'OpenAI API Key no configurada. Ve a Configuración.' },
+      { error: 'GEMINI_API_KEY no configurada. Ve a Configuración.' },
       { status: 400 }
     )
   }

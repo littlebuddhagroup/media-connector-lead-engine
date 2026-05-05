@@ -4,7 +4,7 @@ import { Bell, Search } from 'lucide-react'
 
 interface TopBarProps {
   title: string
-  subtitle?: string
+  subtitle?: React.ReactNode
   actions?: React.ReactNode
 }
 

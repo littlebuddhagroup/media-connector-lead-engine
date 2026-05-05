@@ -1,34 +1,16 @@
 import { createServerClient } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
 
-const ACCESS_COOKIE = 'mmc_access'
-const ACCESS_PASSWORD = process.env.SITE_ACCESS_PASSWORD ?? 'malvavisco'
-
 export async function middleware(request: NextRequest) {
   const pathname = request.nextUrl.pathname
 
-  // Rutas que nunca necesitan comprobación (estáticos, api interna)
-  const isStatic = pathname.startsWith('/_next') || pathname.startsWith('/api/access')
+  // Rutas que nunca necesitan comprobación (estáticos, api interna, crons, webhooks)
+  const isStatic = pathname.startsWith('/_next')
+    || pathname.startsWith('/api/cron/')
+    || pathname.startsWith('/api/webhooks/')
   if (isStatic) return NextResponse.next()
 
-  // ── 1. PUERTA DE ACCESO ──────────────────────────────────────────────────
-  const accessCookie = request.cookies.get(ACCESS_COOKIE)?.value
-  const hasAccess = accessCookie === ACCESS_PASSWORD
-
-  if (!hasAccess && pathname !== '/access') {
-    const url = request.nextUrl.clone()
-    url.pathname = '/access'
-    return NextResponse.redirect(url)
-  }
-
-  // Si ya tiene acceso pero está en /access → mandarlo al login
-  if (hasAccess && pathname === '/access') {
-    const url = request.nextUrl.clone()
-    url.pathname = '/login'
-    return NextResponse.redirect(url)
-  }
-
-  // ── 2. AUTH SUPABASE (igual que antes) ───────────────────────────────────
+  // ── AUTH SUPABASE ────────────────────────────────────────────────────────
   let supabaseResponse = NextResponse.next({ request })
 
   const supabase = createServerClient(
@@ -52,8 +34,7 @@ export async function middleware(request: NextRequest) {
 
   const isAuthPage = pathname.startsWith('/login') ||
     pathname.startsWith('/register') ||
-    pathname.startsWith('/forgot-password') ||
-    pathname.startsWith('/access')
+    pathname.startsWith('/forgot-password')
   const isPublicApi = pathname.startsWith('/api/auth')
 
   if (!user && !isAuthPage && !isPublicApi) {

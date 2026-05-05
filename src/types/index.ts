@@ -101,6 +101,10 @@ export interface Lead {
   user_id: string
   campaign_id?: string
   company_name: string
+  first_name?: string
+  last_name?: string
+  job_title?: string
+  department?: string
   website?: string
   domain?: string
   email?: string

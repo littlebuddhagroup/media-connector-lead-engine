@@ -46,52 +46,56 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'APOLLO_API_KEY no configurada en variables de entorno' }, { status: 400 })
   }
 
-  const { job_titles, industries, countries, per_page = 20 } = await request.json()
+  const { job_titles, industries, countries, per_page = 20, mode, company_name: companyQuery, company_domain } = await request.json()
 
-  if (!job_titles?.length && !industries?.length) {
+  // Modo empresa: buscar contactos de una empresa concreta
+  const isByCompany = mode === 'company'
+
+  if (!isByCompany && !job_titles?.length && !industries?.length) {
     return NextResponse.json({ error: 'Indica al menos un cargo o sector' }, { status: 400 })
+  }
+  if (isByCompany && !companyQuery?.trim() && !company_domain?.trim()) {
+    return NextResponse.json({ error: 'Indica el nombre o dominio de la empresa' }, { status: 400 })
   }
 
   try {
-    // Apollo v1 API — parámetros validados:
-    // - q_keywords: palabras clave libres (usamos para sectores)
-    // - person_titles: cargos exactos
-    // - person_locations: países (nombres en inglés)
-    // - person_seniorities: nivel jerárquico
-    // - contact_email_status: 'verified' | 'likely to engage' | 'unavailable' | 'bounced'
-    // NOTA: q_organization_industries NO es un parámetro válido en v1
-    const searchPayload: Record<string, unknown> = {
-      api_key: apiKey,
-      page: 1,
-      per_page: Math.min(per_page, 50),
+    let searchPayload: Record<string, unknown>
+
+    if (isByCompany) {
+      // Modo empresa: payload mínimo para evitar 422
+      // Apollo es muy estricto con combinaciones de filtros
+      searchPayload = {
+        api_key: apiKey,
+        page: 1,
+        per_page: Math.min(per_page, 50),
+      }
+      if (company_domain?.trim()) {
+        searchPayload.organization_domains = [
+          company_domain.trim().replace(/^https?:\/\//, '').replace(/\/.*$/, '')
+        ]
+      }
+      if (companyQuery?.trim()) {
+        searchPayload.q_organization_name = companyQuery.trim()
+      }
+    } else {
+      // Modo sector/cargo: filtros más granulares
+      searchPayload = {
+        api_key: apiKey,
+        page: 1,
+        per_page: Math.min(per_page, 50),
+        person_seniorities: ['director', 'c_suite', 'vp', 'head', 'manager'],
+      }
+      if (job_titles?.length) searchPayload.person_titles = job_titles
+      if (industries?.length) searchPayload.q_organization_keyword_tags = industries
+      if (countries?.length) searchPayload.person_locations = countries
     }
-
-    // Cargos
-    if (job_titles?.length) {
-      searchPayload.person_titles = job_titles
-    }
-
-    // Sectores → los usamos como keywords de la organización
-    if (industries?.length) {
-      searchPayload.q_organization_keyword_tags = industries
-    }
-
-    // Países → filtro de localización del contacto
-    if (countries?.length) {
-      searchPayload.person_locations = countries
-    }
-
-    // Nivel jerárquico — asegura que encontramos decisores
-    searchPayload.person_seniorities = ['director', 'c_suite', 'vp', 'head', 'manager']
-
-    // Solo contactos con email disponible
-    searchPayload.contact_email_status = ['verified', 'likely to engage']
 
     const res = await fetch('https://api.apollo.io/v1/mixed_people/search', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Cache-Control': 'no-cache',
+        'X-Api-Key': apiKey,  // Apollo ahora exige la key en el header, no en el body
       },
       body: JSON.stringify(searchPayload),
       signal: AbortSignal.timeout(15000),
@@ -99,12 +103,12 @@ export async function POST(request: Request) {
 
     if (!res.ok) {
       const errBody = await res.text()
-      console.error('Apollo error:', res.status, errBody)
+      console.error('Apollo error:', res.status, errBody, 'Payload:', JSON.stringify(searchPayload))
       let friendlyError = `Apollo API error: ${res.status}`
       if (res.status === 403 || res.status === 401) friendlyError = 'API Key de Apollo inválida o sin permisos. Verifica que APOLLO_API_KEY esté configurada en Vercel.'
-      if (res.status === 422) friendlyError = 'Parámetros de búsqueda inválidos. Prueba con menos filtros o términos más simples.'
+      if (res.status === 422) friendlyError = `Apollo rechazó los parámetros (422). Detalle: ${errBody.slice(0, 300)}`
       if (res.status === 429) friendlyError = 'Límite de búsquedas de Apollo alcanzado. Espera unos minutos.'
-      return NextResponse.json({ error: friendlyError, debug: { status: res.status, body: errBody.slice(0, 200) } }, { status: 500 })
+      return NextResponse.json({ error: friendlyError, debug: { status: res.status, body: errBody.slice(0, 300) } }, { status: 500 })
     }
 
     const data = await res.json()

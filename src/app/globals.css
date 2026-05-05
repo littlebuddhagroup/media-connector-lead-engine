@@ -78,3 +78,23 @@
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { @apply bg-gray-300 rounded-full; }
 ::-webkit-scrollbar-thumb:hover { @apply bg-gray-400; }
+
+/* TipTap / ProseMirror editor */
+.ProseMirror {
+  outline: none;
+}
+.ProseMirror p { margin: 0 0 0.5em; }
+.ProseMirror ul, .ProseMirror ol { padding-left: 1.25rem; margin: 0.5em 0; }
+.ProseMirror li { margin: 0.125em 0; }
+.ProseMirror strong { font-weight: 600; }
+.ProseMirror em { font-style: italic; }
+.ProseMirror s { text-decoration: line-through; }
+.ProseMirror a { color: #4f46e5; text-decoration: underline; }
+.ProseMirror hr { border: none; border-top: 1px solid #e5e7eb; margin: 1em 0; }
+.ProseMirror p.is-editor-empty:first-child::before {
+  color: #9ca3af;
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  pointer-events: none;
+}

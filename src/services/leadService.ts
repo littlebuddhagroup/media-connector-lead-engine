@@ -164,19 +164,23 @@ export async function deleteLead(id: string, userId: string) {
 export async function getDashboardStats(userId: string) {
   const supabase = createAdminClient()
 
+  // Límite pragmático para evitar carga masiva en dashboards de gran escala
   const [leadsRes, emailsRes, campaignsRes] = await Promise.all([
     supabase
       .from('leads')
       .select('status, score, created_at')
-      .eq('user_id', userId),
+      .eq('user_id', userId)
+      .limit(10000),
     supabase
       .from('emails')
       .select('status, sent_at')
-      .eq('user_id', userId),
+      .eq('user_id', userId)
+      .limit(10000),
     supabase
       .from('campaigns')
       .select('status')
-      .eq('user_id', userId),
+      .eq('user_id', userId)
+      .limit(500),
   ])
 
   const leads = leadsRes.data ?? []

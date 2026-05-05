@@ -14,7 +14,7 @@ export async function POST(request: Request) {
   if (!user) return NextResponse.json({ error: 'No autenticado' }, { status: 401 })
 
   const body = await request.json()
-  const { rows, column_mapping, campaign_id, filename } = body
+  const { rows, column_mapping, campaign_id, filename, list_id } = body
 
   if (!rows?.length) return NextResponse.json({ error: 'No hay filas para importar' }, { status: 400 })
   if (!column_mapping) return NextResponse.json({ error: 'column_mapping requerido' }, { status: 400 })
@@ -95,11 +95,25 @@ export async function POST(request: Request) {
 
   // Insertar leads en lotes
   let imported = 0
+  const insertedLeadIds: string[] = []
   const batchSize = 50
   for (let i = 0; i < leadsToInsert.length; i += batchSize) {
     const batch = leadsToInsert.slice(i, i + batchSize)
-    const { error } = await supabase.from('leads').insert(batch)
-    if (!error) imported += batch.length
+    const { data: insertedBatch, error } = await supabase.from('leads').insert(batch).select('id')
+    if (!error && insertedBatch) {
+      imported += insertedBatch.length
+      insertedLeadIds.push(...insertedBatch.map((l: { id: string }) => l.id))
+    }
+  }
+
+  // Asignar a lista si se especificó list_id
+  if (list_id && insertedLeadIds.length > 0) {
+    await supabase
+      .from('lead_list_members')
+      .upsert(
+        insertedLeadIds.map(lid => ({ list_id, lead_id: lid })),
+        { onConflict: 'list_id,lead_id', ignoreDuplicates: true }
+      )
   }
 
   // Actualizar registro de importación
