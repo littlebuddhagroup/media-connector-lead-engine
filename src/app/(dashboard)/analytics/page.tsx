@@ -30,6 +30,7 @@ interface EmailRow {
   replied_at?: string
   open_count?: number
   click_count?: number
+  last_clicked_url?: string
   campaign_id?: string
   campaign_name?: string
 }
@@ -181,7 +182,12 @@ function MiniBar({ data }: { data: DailyRow[] }) {
   )
 }
 
-function DrillDownPanel({ emails, emptyText, showRepliedAt }: { emails: EmailRow[]; emptyText: string; showRepliedAt?: boolean }) {
+function DrillDownPanel({ emails, emptyText, showRepliedAt, showClickedUrl }: {
+  emails: EmailRow[]
+  emptyText: string
+  showRepliedAt?: boolean
+  showClickedUrl?: boolean
+}) {
   if (emails.length === 0) {
     return <div className="py-6 text-center text-sm text-gray-400">{emptyText}</div>
   }
@@ -194,6 +200,9 @@ function DrillDownPanel({ emails, emptyText, showRepliedAt }: { emails: EmailRow
             <th className="text-left px-4 py-2.5 text-xs font-medium text-gray-500">Asunto</th>
             <th className="text-left px-4 py-2.5 text-xs font-medium text-gray-500">Cuenta envío</th>
             <th className="text-left px-4 py-2.5 text-xs font-medium text-gray-500">Campaña</th>
+            {showClickedUrl && (
+              <th className="text-left px-4 py-2.5 text-xs font-medium text-gray-500">URL clicada</th>
+            )}
             <th className="text-right px-4 py-2.5 text-xs font-medium text-gray-500">Estado</th>
             {showRepliedAt
               ? <th className="text-right px-4 py-2.5 text-xs font-medium text-gray-500">Respondió</th>
@@ -237,6 +246,29 @@ function DrillDownPanel({ emails, emptyText, showRepliedAt }: { emails: EmailRow
                     <span className="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">{email.campaign_name}</span>
                   ) : <span className="text-xs text-gray-300">—</span>}
                 </td>
+                {showClickedUrl && (
+                  <td className="px-4 py-2.5 max-w-[220px]">
+                    {email.last_clicked_url ? (
+                      <a
+                        href={email.last_clicked_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        title={email.last_clicked_url}
+                        className="flex items-center gap-1 text-xs text-purple-600 hover:text-purple-800 hover:underline"
+                      >
+                        <span className="truncate max-w-[180px]">
+                          {(() => {
+                            try { return new URL(email.last_clicked_url).hostname.replace(/^www\./, '') + new URL(email.last_clicked_url).pathname }
+                            catch { return email.last_clicked_url }
+                          })()}
+                        </span>
+                        <ExternalLink className="w-3 h-3 shrink-0" />
+                      </a>
+                    ) : (
+                      <span className="text-xs text-gray-300">—</span>
+                    )}
+                  </td>
+                )}
                 <td className="px-4 py-2.5 text-right">
                   <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${cfg.className}`}>{cfg.label}</span>
                 </td>
@@ -347,7 +379,7 @@ function exportToExcel(params: {
   XLSX.utils.book_append_sheet(wb, wsBounced, 'Rebotados')
 
   // ── Hoja 7: Todos los emails ──
-  const allHeaders = ['Empresa', 'Email dest.', 'Asunto', 'Cuenta envío', 'Campaña', 'Estado', 'Fecha envío', 'Fecha apertura', 'Fecha clic', 'Fecha respuesta', 'Nº aperturas', 'Nº clics']
+  const allHeaders = ['Empresa', 'Email dest.', 'Asunto', 'Cuenta envío', 'Campaña', 'Estado', 'Fecha envío', 'Fecha apertura', 'Fecha clic', 'URL clicada', 'Fecha respuesta', 'Nº aperturas', 'Nº clics']
   const allRows = recentEmails.map(e => [
     e.company_name || e.to_name || '',
     e.to_email || '',
@@ -358,12 +390,13 @@ function exportToExcel(params: {
     e.sent_at    ? new Date(e.sent_at).toLocaleString('es')    : '',
     e.opened_at  ? new Date(e.opened_at).toLocaleString('es')  : '',
     e.clicked_at ? new Date(e.clicked_at).toLocaleString('es') : '',
+    e.last_clicked_url ?? '',
     e.replied_at ? new Date(e.replied_at).toLocaleString('es') : '',
     e.open_count  ?? '',
     e.click_count ?? '',
   ])
   const wsAll = XLSX.utils.aoa_to_sheet([allHeaders, ...allRows])
-  wsAll['!cols'] = [{ wch: 24 }, { wch: 28 }, { wch: 36 }, { wch: 28 }, { wch: 24 }, { wch: 12 }, ...Array(6).fill({ wch: 20 })]
+  wsAll['!cols'] = [{ wch: 24 }, { wch: 28 }, { wch: 36 }, { wch: 28 }, { wch: 24 }, { wch: 12 }, { wch: 20 }, { wch: 20 }, { wch: 20 }, { wch: 50 }, { wch: 20 }, { wch: 12 }, { wch: 12 }]
   XLSX.utils.book_append_sheet(wb, wsAll, 'Todos los emails')
 
   const date = new Date().toISOString().slice(0, 10)
@@ -730,6 +763,7 @@ export default function AnalyticsPage() {
                 <DrillDownPanel
                   emails={drillDown[activePanel]}
                   showRepliedAt={activePanel === 'replied'}
+                  showClickedUrl={activePanel === 'clicked'}
                   emptyText={
                     activePanel === 'bounced'  ? '✅ Sin rebotes en este período.' :
                     activePanel === 'opened'   ? 'Sin aperturas registradas en este período.' :

@@ -89,6 +89,7 @@ export async function POST(request: Request) {
       if (eventType === 'email.clicked') {
         nrUpdate.clicked_at  = new Date().toISOString()
         nrUpdate.click_count = (nr.click_count ?? 0) + 1
+        if (clickedUrl) nrUpdate.last_clicked_url = clickedUrl
         if (!nr.opened_at) nrUpdate.opened_at = new Date().toISOString()
       }
       if (Object.keys(nrUpdate).length > 0) {
@@ -127,6 +128,7 @@ export async function POST(request: Request) {
   if (eventType === 'email.clicked') {
     emailUpdate.clicked_at  = new Date().toISOString()
     emailUpdate.click_count = (emailRecord.click_count ?? 0) + 1
+    if (clickedUrl) emailUpdate.last_clicked_url = clickedUrl
     if (!emailRecord.opened_at) {
       emailUpdate.opened_at = new Date().toISOString()
     }

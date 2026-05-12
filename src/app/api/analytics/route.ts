@@ -25,7 +25,7 @@ export async function GET(request: Request) {
   // ─── 1. Todos los emails en el período ────────────────────
   const { data: emails } = await admin
     .from('emails')
-    .select('id, status, sent_at, opened_at, replied_at, clicked_at, from_email, campaign_id, subject, to_email, to_name, lead_id, open_count, click_count')
+    .select('id, status, sent_at, opened_at, replied_at, clicked_at, from_email, campaign_id, subject, to_email, to_name, lead_id, open_count, click_count, last_clicked_url')
     .in('user_id', teamUserIds)
     .gte('sent_at', sinceStr)
     .order('sent_at', { ascending: false })
@@ -35,6 +35,7 @@ export async function GET(request: Request) {
     replied_at: string | null; clicked_at: string | null; from_email: string | null
     campaign_id: string | null; subject: string | null; to_email: string | null
     to_name: string | null; lead_id: string | null; open_count: number | null; click_count: number | null
+    last_clicked_url: string | null
   }
   const allEmails = (emails ?? []) as EmailRec[]
 
@@ -138,6 +139,7 @@ export async function GET(request: Request) {
     replied_at: e.replied_at,
     open_count: (e as Record<string, unknown>).open_count as number | null ?? null,
     click_count: (e as Record<string, unknown>).click_count as number | null ?? null,
+    last_clicked_url: (e as Record<string, unknown>).last_clicked_url as string | null ?? null,
     campaign_id: e.campaign_id,
     campaign_name: (e.campaign_id && campaignMap.get(e.campaign_id)) || null,
   })

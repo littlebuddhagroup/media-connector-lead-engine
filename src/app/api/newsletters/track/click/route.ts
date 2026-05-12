@@ -48,6 +48,7 @@ export async function GET(request: Request) {
           .update({
             clicked_at: recipient.clicked_at ?? now,
             click_count: newCount,
+            last_clicked_url: safeDestination,
           })
           .eq('id', recipientId)
 
