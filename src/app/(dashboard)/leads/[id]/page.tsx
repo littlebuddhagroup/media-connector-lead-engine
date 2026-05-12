@@ -159,6 +159,16 @@ export default function LeadDetailPage({ params }: { params: { id: string } }) {
   const [savingCampaign, setSavingCampaign] = useState(false)
   const [removingCampaignId, setRemovingCampaignId] = useState<string | null>(null)
 
+  // Lead lists (many-to-many via lead_list_members)
+  type LeadListMember = { list_id: string; lead_lists: { id: string; name: string; color: string | null; icon: string | null } }
+  type LeadListItem = { id: string; name: string; color: string | null; icon: string | null }
+  const [leadLists, setLeadLists] = useState<LeadListMember[]>([])
+  const [allLists, setAllLists] = useState<LeadListItem[]>([])
+  const [showAddList, setShowAddList] = useState(false)
+  const [selectedListId, setSelectedListId] = useState('')
+  const [savingList, setSavingList] = useState(false)
+  const [removingListId, setRemovingListId] = useState<string | null>(null)
+
   // Newsletter opt-out
   const [newsletterUnsubscribed, setNewsletterUnsubscribed] = useState(false)
   const [togglingUnsubscribe, setTogglingUnsubscribe] = useState(false)
@@ -209,6 +219,55 @@ export default function LeadDetailPage({ params }: { params: { id: string } }) {
     } else {
       const json = await res.json()
       toast.error('Error', json.error ?? 'No se pudo quitar de la campaña.')
+    }
+  }
+
+  const fetchLeadLists = async () => {
+    const res = await fetch(`/api/leads/${id}/lists`)
+    const json = await res.json()
+    setLeadLists(json.data ?? [])
+  }
+
+  const fetchAllLists = async () => {
+    const res = await fetch('/api/lists')
+    const json = await res.json()
+    setAllLists((json.data ?? []) as LeadListItem[])
+  }
+
+  const handleAddList = async () => {
+    if (!selectedListId) return
+    setSavingList(true)
+    const res = await fetch(`/api/leads/${id}/lists`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ list_id: selectedListId }),
+    })
+    setSavingList(false)
+    if (res.ok) {
+      setShowAddList(false)
+      setSelectedListId('')
+      fetchLeadLists()
+      toast.success('Añadido a la lista', 'El lead se ha añadido correctamente.')
+    } else {
+      const json = await res.json()
+      toast.error('Error', json.error ?? 'No se pudo añadir a la lista.')
+    }
+  }
+
+  const handleRemoveList = async (listId: string) => {
+    setRemovingListId(listId)
+    const res = await fetch(`/api/leads/${id}/lists`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ list_id: listId }),
+    })
+    setRemovingListId(null)
+    if (res.ok) {
+      fetchLeadLists()
+      toast.success('Quitado de la lista', 'El lead ha sido eliminado de la lista.')
+    } else {
+      const json = await res.json()
+      toast.error('Error', json.error ?? 'No se pudo quitar de la lista.')
     }
   }
 
@@ -267,7 +326,7 @@ export default function LeadDetailPage({ params }: { params: { id: string } }) {
     setSequences(json.data ?? [])
   }
 
-  useEffect(() => { fetchLead(); fetchSequences(); fetchLeadCampaigns(); fetchAllCampaigns() }, [id])
+  useEffect(() => { fetchLead(); fetchSequences(); fetchLeadCampaigns(); fetchAllCampaigns(); fetchLeadLists(); fetchAllLists() }, [id])
 
   const handleEnrich = async () => {
     setEnriching(true)
@@ -794,70 +853,208 @@ export default function LeadDetailPage({ params }: { params: { id: string } }) {
               </div>
             </div>
 
+            {/* Listas de leads (many-to-many via lead_list_members) */}
+            <div className="card p-4">
+              <div className="flex items-center justify-between mb-3">
+                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide flex items-center gap-1.5">
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 10h16M4 14h10" />
+                  </svg>
+                  Listas
+                  {leadLists.length > 0 && (
+                    <span className="ml-1 bg-purple-100 text-purple-700 rounded-full px-1.5 py-0.5 text-[10px] font-bold">
+                      {leadLists.length}
+                    </span>
+                  )}
+                </p>
+                <button
+                  onClick={() => { setShowAddList(v => !v); setSelectedListId('') }}
+                  className="flex items-center gap-1 text-xs bg-purple-600 hover:bg-purple-700 text-white px-2.5 py-1 rounded-lg font-medium transition-colors"
+                >
+                  <PlusCircle className="w-3.5 h-3.5" />
+                  Añadir a lista
+                </button>
+              </div>
+
+              {showAddList && (
+                <div className="mb-3 p-3 bg-purple-50 border border-purple-100 rounded-xl space-y-2">
+                  <p className="text-xs font-medium text-purple-700">Selecciona una lista</p>
+                  <div className="flex gap-2">
+                    <select
+                      className="input text-xs py-1.5 flex-1"
+                      value={selectedListId}
+                      onChange={e => setSelectedListId(e.target.value)}
+                    >
+                      <option value="">Elegir lista…</option>
+                      {allLists
+                        .filter(l => !leadLists.some(ll => ll.list_id === l.id))
+                        .map(l => (
+                          <option key={l.id} value={l.id}>{l.icon ? `${l.icon} ` : ''}{l.name}</option>
+                        ))
+                      }
+                    </select>
+                    <button
+                      onClick={handleAddList}
+                      disabled={!selectedListId || savingList}
+                      className="btn-primary text-xs py-1.5 px-4 shrink-0 bg-purple-600 hover:bg-purple-700 border-purple-600"
+                    >
+                      {savingList ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : 'Añadir'}
+                    </button>
+                    <button onClick={() => setShowAddList(false)} className="text-gray-400 hover:text-gray-600 p-1.5">
+                      <XIcon className="w-4 h-4" />
+                    </button>
+                  </div>
+                  {allLists.filter(l => !leadLists.some(ll => ll.list_id === l.id)).length === 0 && (
+                    <p className="text-xs text-purple-600">Este lead ya está en todas las listas disponibles.</p>
+                  )}
+                </div>
+              )}
+
+              {leadLists.length === 0 ? (
+                <div className="text-center py-4">
+                  <svg className="w-7 h-7 text-gray-200 mx-auto mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 10h16M4 14h10" />
+                  </svg>
+                  <p className="text-xs text-gray-400 mb-2">Sin listas asignadas</p>
+                  <button
+                    onClick={() => { setShowAddList(true); setSelectedListId('') }}
+                    className="text-xs text-purple-600 hover:text-purple-700 font-medium"
+                  >
+                    + Añadir a una lista
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-1.5">
+                  {leadLists.map(ll => {
+                    const lst = ll.lead_lists
+                    return (
+                      <div key={ll.list_id} className="flex items-center justify-between gap-2 rounded-lg border border-gray-100 bg-gray-50 px-3 py-2 hover:border-purple-200 hover:bg-purple-50/30 transition-colors">
+                        <div className="flex items-center gap-2 min-w-0">
+                          {lst?.icon && <span className="text-sm shrink-0">{lst.icon}</span>}
+                          <span className="text-xs font-medium text-gray-800 truncate">{lst?.name ?? 'Lista'}</span>
+                        </div>
+                        <button
+                          onClick={() => handleRemoveList(ll.list_id)}
+                          disabled={removingListId === ll.list_id}
+                          className="text-gray-300 hover:text-red-400 transition-colors shrink-0 p-0.5 rounded"
+                          title="Quitar de esta lista"
+                        >
+                          {removingListId === ll.list_id
+                            ? <Loader2 className="w-3 h-3 animate-spin" />
+                            : <XIcon className="w-3 h-3" />
+                          }
+                        </button>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+
             {/* Campañas del lead (many-to-many) */}
             <div className="card p-4">
               <div className="flex items-center justify-between mb-3">
                 <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide flex items-center gap-1.5">
                   <Megaphone className="w-3.5 h-3.5" /> Campañas
+                  {leadCampaigns.length > 0 && (
+                    <span className="ml-1 bg-brand-100 text-brand-700 rounded-full px-1.5 py-0.5 text-[10px] font-bold">
+                      {leadCampaigns.length}
+                    </span>
+                  )}
                 </p>
                 <button
                   onClick={() => { setShowAddCampaign(v => !v); setSelectedCampaignId('') }}
-                  className="text-xs text-brand-600 hover:text-brand-700 flex items-center gap-1"
+                  className="flex items-center gap-1 text-xs bg-brand-600 hover:bg-brand-700 text-white px-2.5 py-1 rounded-lg font-medium transition-colors"
                 >
-                  <PlusCircle className="w-3.5 h-3.5" /> Añadir
+                  <PlusCircle className="w-3.5 h-3.5" />
+                  Añadir a lista
                 </button>
               </div>
 
               {showAddCampaign && (
-                <div className="mb-3 flex gap-2">
-                  <select
-                    className="input text-xs py-1 flex-1"
-                    value={selectedCampaignId}
-                    onChange={e => setSelectedCampaignId(e.target.value)}
-                  >
-                    <option value="">Seleccionar campaña…</option>
-                    {allCampaigns
-                      .filter(c => !leadCampaigns.some(lc => lc.campaign_id === c.id))
-                      .map(c => (
-                        <option key={c.id} value={c.id}>{c.name}</option>
-                      ))
-                    }
-                  </select>
-                  <button
-                    onClick={handleAddCampaign}
-                    disabled={!selectedCampaignId || savingCampaign}
-                    className="btn-primary text-xs py-1 px-3"
-                  >
-                    {savingCampaign ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : 'OK'}
-                  </button>
+                <div className="mb-3 p-3 bg-brand-50 border border-brand-100 rounded-xl space-y-2">
+                  <p className="text-xs font-medium text-brand-700">Selecciona una campaña</p>
+                  <div className="flex gap-2">
+                    <select
+                      className="input text-xs py-1.5 flex-1"
+                      value={selectedCampaignId}
+                      onChange={e => setSelectedCampaignId(e.target.value)}
+                    >
+                      <option value="">Elegir campaña…</option>
+                      {allCampaigns
+                        .filter(c => !leadCampaigns.some(lc => lc.campaign_id === c.id))
+                        .map(c => (
+                          <option key={c.id} value={c.id}>
+                            {c.name}{c.status !== 'active' ? ` (${c.status})` : ''}
+                          </option>
+                        ))
+                      }
+                    </select>
+                    <button
+                      onClick={handleAddCampaign}
+                      disabled={!selectedCampaignId || savingCampaign}
+                      className="btn-primary text-xs py-1.5 px-4 shrink-0"
+                    >
+                      {savingCampaign ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : 'Añadir'}
+                    </button>
+                    <button
+                      onClick={() => setShowAddCampaign(false)}
+                      className="text-gray-400 hover:text-gray-600 p-1.5"
+                    >
+                      <XIcon className="w-4 h-4" />
+                    </button>
+                  </div>
+                  {allCampaigns.filter(c => !leadCampaigns.some(lc => lc.campaign_id === c.id)).length === 0 && (
+                    <p className="text-xs text-brand-600">Este lead ya está en todas las campañas disponibles.</p>
+                  )}
                 </div>
               )}
 
               {leadCampaigns.length === 0 ? (
-                <p className="text-xs text-gray-400">Sin campañas asignadas.</p>
+                <div className="text-center py-4">
+                  <Megaphone className="w-7 h-7 text-gray-200 mx-auto mb-2" />
+                  <p className="text-xs text-gray-400 mb-2">Sin campañas asignadas</p>
+                  <button
+                    onClick={() => { setShowAddCampaign(true); setSelectedCampaignId('') }}
+                    className="text-xs text-brand-600 hover:text-brand-700 font-medium"
+                  >
+                    + Añadir a una campaña
+                  </button>
+                </div>
               ) : (
                 <div className="space-y-1.5">
-                  {leadCampaigns.map(lc => (
-                    <div key={lc.campaign_id} className="flex items-center justify-between gap-2 rounded-lg bg-gray-50 px-2.5 py-1.5">
-                      <Link
-                        href={`/campaigns`}
-                        className="text-xs text-brand-700 hover:underline truncate font-medium"
-                      >
-                        {lc.campaign?.name ?? 'Campaña'}
-                      </Link>
-                      <button
-                        onClick={() => handleRemoveCampaign(lc.campaign_id)}
-                        disabled={removingCampaignId === lc.campaign_id}
-                        className="text-gray-300 hover:text-red-400 transition-colors shrink-0"
-                        title="Quitar de esta campaña"
-                      >
-                        {removingCampaignId === lc.campaign_id
-                          ? <Loader2 className="w-3 h-3 animate-spin" />
-                          : <XIcon className="w-3 h-3" />
-                        }
-                      </button>
-                    </div>
-                  ))}
+                  {leadCampaigns.map(lc => {
+                    const statusDot: Record<string, string> = {
+                      active: 'bg-green-400',
+                      paused: 'bg-amber-400',
+                      completed: 'bg-gray-400',
+                      draft: 'bg-gray-300',
+                    }
+                    return (
+                      <div key={lc.campaign_id} className="flex items-center justify-between gap-2 rounded-lg border border-gray-100 bg-gray-50 px-3 py-2 hover:border-brand-200 hover:bg-brand-50/30 transition-colors">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${statusDot[lc.campaign?.status ?? ''] ?? 'bg-gray-300'}`} />
+                          <Link
+                            href={`/campaigns/${lc.campaign_id}`}
+                            className="text-xs text-brand-700 hover:underline truncate font-medium"
+                          >
+                            {lc.campaign?.name ?? 'Campaña'}
+                          </Link>
+                        </div>
+                        <button
+                          onClick={() => handleRemoveCampaign(lc.campaign_id)}
+                          disabled={removingCampaignId === lc.campaign_id}
+                          className="text-gray-300 hover:text-red-400 transition-colors shrink-0 p-0.5 rounded"
+                          title="Quitar de esta campaña"
+                        >
+                          {removingCampaignId === lc.campaign_id
+                            ? <Loader2 className="w-3 h-3 animate-spin" />
+                            : <XIcon className="w-3 h-3" />
+                          }
+                        </button>
+                      </div>
+                    )
+                  })}
                 </div>
               )}
             </div>

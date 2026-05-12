@@ -184,7 +184,7 @@ export default function TeamsPage() {
   const team = membership?.team
   const myRole = membership?.role
   const isOwner = myRole === 'owner'
-  const canManage = myRole === 'owner' || myRole === 'admin'
+  const canManage = !!team  // Todos los miembros del equipo tienen acceso completo
   const activeMembers = team?.team_members?.filter(m => m.status === 'active') ?? []
   const pendingInvites = team?.team_invitations?.filter(i => i.status === 'pending') ?? []
 
@@ -194,7 +194,7 @@ export default function TeamsPage() {
         title="Equipo"
         subtitle="Colabora con tus compañeros y comparte leads"
         actions={
-          team && canManage ? (
+          team ? (
             <button onClick={handleLeave} disabled={leaving}
               className="text-xs px-3 py-1.5 rounded-lg border border-red-200 text-red-600 hover:bg-red-50 transition-colors flex items-center gap-1.5">
               <LogOut className="w-3.5 h-3.5" />
@@ -395,11 +395,10 @@ export default function TeamsPage() {
             {/* Info de permisos */}
             <div className="card p-4 bg-blue-50 border border-blue-100">
               <p className="text-xs text-blue-700 font-medium mb-1 flex items-center gap-1.5">
-                <Check className="w-3.5 h-3.5" /> Acceso compartido del equipo
+                <Check className="w-3.5 h-3.5" /> Acceso completo del equipo
               </p>
               <p className="text-xs text-blue-600">
-                Todos los miembros pueden ver los leads y campañas del propietario del equipo.
-                Los admins pueden invitar nuevos miembros y eliminar miembros existentes.
+                Todos los miembros del equipo tienen acceso completo: pueden ver y gestionar leads, campañas, secuencias, newsletters e invitar nuevos miembros. Solo el propietario puede disolver el equipo.
               </p>
             </div>
           </>

@@ -7,7 +7,7 @@ import TopBar from '@/components/layout/TopBar'
 import Link from 'next/link'
 import {
   ArrowLeft, Users, Mail, TrendingUp, Target, Zap, Calendar,
-  Plus, Search, Trash2, Send, ChevronRight, BarChart3, FileText,
+  Plus, Search, Trash2, Send, ChevronRight, ChevronLeft, BarChart3, FileText,
   Settings, Loader2, CheckCircle, XCircle, Play, Pause,
   Star, Clock, Check, Save, Edit2, Mails, Copy, Sparkles, AlertTriangle,
   CalendarClock, ChevronDown, ChevronUp
@@ -134,7 +134,21 @@ export default function CampaignDetailPage() {
   const [sequences, setSequences] = useState<Record<string, unknown>[]>([])
   const [templates, setTemplates] = useState<Template[]>([])
   const [loading, setLoading] = useState(true)
-  const [activeTab, setActiveTab] = useState<'overview' | 'leads' | 'sequences' | 'settings'>('overview')
+  const [activeTab, setActiveTab] = useState<'overview' | 'leads' | 'sequences' | 'analytics' | 'settings'>('overview')
+
+  // ─── Analytics tab ────────────────────────────────────────────
+  interface AnalyticsRow {
+    lead_id: string; company_name: string; email: string; contact_name: string | null
+    status: string; score: number; sector: string; country: string
+    sent: number; opened: number; clicked: number; replied: number; bounced: number
+    open_rate: number; click_rate: number; reply_rate: number
+    last_email_at: string | null; has_active_sequence: boolean; sequence_completed: boolean
+  }
+  const [analyticsData, setAnalyticsData] = useState<AnalyticsRow[]>([])
+  const [analyticsLoading, setAnalyticsLoading] = useState(false)
+  const [analyticsLoaded, setAnalyticsLoaded] = useState(false)
+  const [analyticsSort, setAnalyticsSort] = useState<{ col: keyof AnalyticsRow; dir: 'asc' | 'desc' }>({ col: 'sent', dir: 'desc' })
+  const [analyticsSearch, setAnalyticsSearch] = useState('')
 
   // Asignar leads
   const [showAssignModal, setShowAssignModal] = useState(false)
@@ -172,6 +186,11 @@ export default function CampaignDetailPage() {
   const [editingBodyStepId, setEditingBodyStepId] = useState<string | null>(null)
   const [stepEdits, setStepEdits] = useState<Record<string, { scheduled_for?: string; subject?: string; body?: string }>>({})
   const [savingStep, setSavingStep] = useState<string | null>(null)
+
+  // Paginación de leads de la campaña
+  const [campLeadsPage, setCampLeadsPage] = useState(1)
+  const [campLeadsTotal, setCampLeadsTotal] = useState(0)
+  const CAMP_LEADS_PER_PAGE = 50
 
   // Buscador y paginación de secuencias
   const [seqSearch, setSeqSearch] = useState('')
@@ -415,11 +434,20 @@ export default function CampaignDetailPage() {
   const [editSettings, setEditSettings] = useState<Partial<Campaign>>({})
   const [savingSettings, setSavingSettings] = useState(false)
 
+  const fetchCampLeads = useCallback(async (page: number) => {
+    const res = await fetch(`/api/leads?campaign_id=${id}&page=${page}&per_page=${CAMP_LEADS_PER_PAGE}`)
+    const json = await res.json()
+    setLeads(json.data ?? [])
+    setCampLeadsTotal(json.total ?? 0)
+  }, [id, CAMP_LEADS_PER_PAGE])
+
+  useEffect(() => { fetchCampLeads(campLeadsPage) }, [campLeadsPage, fetchCampLeads])
+
   const fetchAll = useCallback(async () => {
     const [campRes, statsRes, leadsRes, seqRes, tmplRes] = await Promise.all([
       fetch(`/api/campaigns/${id}`),
       fetch(`/api/campaigns/${id}/stats`),
-      fetch(`/api/leads?campaign_id=${id}&per_page=200`),
+      fetch(`/api/leads?campaign_id=${id}&page=1&per_page=${CAMP_LEADS_PER_PAGE}`),
       fetch(`/api/sequences?campaign_id=${id}`),
       fetch(`/api/campaigns/${id}/templates`),
     ])
@@ -429,6 +457,8 @@ export default function CampaignDetailPage() {
     if (campJson.data) setCampaign(campJson.data)
     if (statsJson.data) setStats(statsJson.data)
     setLeads(leadsJson.data ?? [])
+    setCampLeadsTotal(leadsJson.total ?? 0)
+    setCampLeadsPage(1)
     setSequences(seqJson.data ?? [])
     const fetchedTemplates = tmplJson.data ?? []
     setTemplates(fetchedTemplates)
@@ -651,10 +681,146 @@ export default function CampaignDetailPage() {
 
   const tabs = [
     { id: 'overview', label: 'Resumen', icon: BarChart3 },
-    { id: 'leads', label: `Leads (${leads.length})`, icon: Users },
+    { id: 'leads', label: `Leads (${campLeadsTotal || leads.length})`, icon: Users },
     { id: 'sequences', label: `Secuencias (${sequences.length})`, icon: Mails },
+    { id: 'analytics', label: 'Analíticas', icon: TrendingUp },
     { id: 'settings', label: 'Ajustes', icon: Settings },
   ] as const
+
+  // Carga analíticas al entrar en el tab (lazy)
+  const loadAnalytics = async () => {
+    if (analyticsLoaded) return
+    setAnalyticsLoading(true)
+    const res = await fetch(`/api/campaigns/${id}/analytics`)
+    const json = await res.json()
+    setAnalyticsLoading(false)
+    if (res.ok) {
+      setAnalyticsData(json.data ?? [])
+      setAnalyticsLoaded(true)
+    } else {
+      toast.error('Error al cargar analíticas', json.error)
+    }
+  }
+
+  // Ordenar analíticas
+  const sortedAnalytics = [...analyticsData]
+    .filter(r => {
+      if (!analyticsSearch) return true
+      const q = analyticsSearch.toLowerCase()
+      return r.company_name.toLowerCase().includes(q) || (r.email ?? '').toLowerCase().includes(q) || (r.contact_name ?? '').toLowerCase().includes(q)
+    })
+    .sort((a, b) => {
+      const va = a[analyticsSort.col] ?? 0
+      const vb = b[analyticsSort.col] ?? 0
+      if (va < vb) return analyticsSort.dir === 'asc' ? -1 : 1
+      if (va > vb) return analyticsSort.dir === 'asc' ? 1 : -1
+      return 0
+    })
+
+  const toggleAnalyticsSort = (col: typeof analyticsSort.col) => {
+    setAnalyticsSort(s => s.col === col ? { col, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { col, dir: 'desc' })
+  }
+
+  // Export Excel (analytics)
+  const exportAnalyticsExcel = async () => {
+    const XLSX = await import('xlsx')
+    const rows = sortedAnalytics.map(r => ({
+      'Empresa': r.company_name,
+      'Contacto': r.contact_name ?? '',
+      'Email': r.email,
+      'Estado': r.status,
+      'Score': r.score,
+      'Sector': r.sector,
+      'País': r.country,
+      'Enviados': r.sent,
+      'Abiertos': r.opened,
+      'Clicados': r.clicked,
+      'Respondidos': r.replied,
+      'Rebotados': r.bounced,
+      'Tasa apertura %': r.open_rate,
+      'Tasa clic %': r.click_rate,
+      'Tasa respuesta %': r.reply_rate,
+      'Secuencia activa': r.has_active_sequence ? 'Sí' : 'No',
+      'Secuencia completada': r.sequence_completed ? 'Sí' : 'No',
+      'Último email': r.last_email_at ? new Date(r.last_email_at).toLocaleDateString('es-ES') : '',
+    }))
+    const ws = XLSX.utils.json_to_sheet(rows)
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, ws, 'Analíticas')
+    XLSX.writeFile(wb, `analiticas-${campaign?.name ?? id}.xlsx`)
+  }
+
+  // Export PDF (analytics)
+  const exportAnalyticsPDF = () => {
+    const rows = sortedAnalytics
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
+<title>Analíticas — ${campaign?.name ?? ''}</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background:#fff; color:#1a1a1a; padding:32px; }
+  .header { display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:28px; padding-bottom:20px; border-bottom:2px solid #6c47ff; }
+  .title { font-size:22px; font-weight:700; color:#6c47ff; }
+  .subtitle { font-size:13px; color:#666; margin-top:4px; }
+  .meta { text-align:right; font-size:12px; color:#999; }
+  .kpis { display:grid; grid-template-columns:repeat(5,1fr); gap:12px; margin-bottom:28px; }
+  .kpi { background:#f8f7ff; border:1px solid #e8e4ff; border-radius:10px; padding:14px; text-align:center; }
+  .kpi-val { font-size:22px; font-weight:800; color:#6c47ff; }
+  .kpi-label { font-size:11px; color:#888; margin-top:2px; }
+  table { width:100%; border-collapse:collapse; font-size:11px; }
+  th { background:#6c47ff; color:#fff; padding:8px 6px; text-align:left; font-weight:600; }
+  tr:nth-child(even) { background:#f8f7ff; }
+  td { padding:7px 6px; border-bottom:1px solid #ede9ff; }
+  .badge { display:inline-block; padding:2px 6px; border-radius:99px; font-size:10px; font-weight:600; }
+  .badge-opened { background:#dbeafe; color:#1d4ed8; }
+  .badge-replied { background:#dcfce7; color:#166534; }
+  .badge-clicked { background:#ede9fe; color:#6d28d9; }
+  .badge-none { background:#f3f4f6; color:#6b7280; }
+  .footer { margin-top:20px; text-align:center; font-size:11px; color:#bbb; }
+  @media print { body { padding:16px; } }
+</style></head><body>
+<div class="header">
+  <div>
+    <div class="title">📊 Analíticas de Campaña</div>
+    <div class="subtitle">${campaign?.name ?? ''} · ${rows.length} leads analizados</div>
+  </div>
+  <div class="meta">MyMediaConnect<br>${new Date().toLocaleDateString('es-ES', { day:'numeric', month:'long', year:'numeric' })}</div>
+</div>
+<div class="kpis">
+  ${[
+    { label: 'Leads', val: rows.length },
+    { label: 'Emails enviados', val: rows.reduce((s,r)=>s+r.sent,0) },
+    { label: 'Abiertos', val: rows.reduce((s,r)=>s+r.opened,0) },
+    { label: 'Clicados', val: rows.reduce((s,r)=>s+r.clicked,0) },
+    { label: 'Respondidos', val: rows.reduce((s,r)=>s+r.replied,0) },
+  ].map(k => `<div class="kpi"><div class="kpi-val">${k.val}</div><div class="kpi-label">${k.label}</div></div>`).join('')}
+</div>
+<table>
+<thead><tr>
+  <th>Empresa</th><th>Email</th><th>Estado</th><th>Score</th>
+  <th>Enviados</th><th>Abiertos</th><th>Clicados</th><th>Respondidos</th>
+  <th>Apertura%</th><th>Respuesta%</th><th>Secuencia</th>
+</tr></thead>
+<tbody>
+${rows.map(r => `<tr>
+  <td><strong>${r.company_name}</strong>${r.contact_name ? `<br><small style="color:#888">${r.contact_name}</small>` : ''}</td>
+  <td style="font-size:10px">${r.email}</td>
+  <td>${r.status}</td>
+  <td>${r.score}</td>
+  <td>${r.sent}</td>
+  <td>${r.opened > 0 ? `<span class="badge badge-opened">${r.opened}</span>` : '0'}</td>
+  <td>${r.clicked > 0 ? `<span class="badge badge-clicked">${r.clicked}</span>` : '0'}</td>
+  <td>${r.replied > 0 ? `<span class="badge badge-replied">${r.replied}</span>` : '0'}</td>
+  <td>${r.open_rate}%</td>
+  <td>${r.reply_rate}%</td>
+  <td>${r.has_active_sequence ? '🟢 Activa' : r.sequence_completed ? '✅ Completada' : '—'}</td>
+</tr>`).join('')}
+</tbody>
+</table>
+<div class="footer">Generado con MyMediaConnect · ${new Date().toLocaleString('es-ES')}</div>
+</body></html>`
+    const w = window.open('', '_blank')
+    if (w) { w.document.write(html); w.document.close(); setTimeout(() => w.print(), 600) }
+  }
 
   const hasGoals = (campaign.goal_leads ?? 0) > 0 || (campaign.goal_meetings ?? 0) > 0 || (campaign.goal_replies ?? 0) > 0
 
@@ -690,7 +856,7 @@ export default function CampaignDetailPage() {
             {tabs.map(tab => (
               <button
                 key={tab.id}
-                onClick={() => setActiveTab(tab.id)}
+                onClick={() => { setActiveTab(tab.id); if (tab.id === 'analytics') loadAnalytics() }}
                 className={`flex items-center gap-1.5 px-5 py-3 text-xs font-medium whitespace-nowrap border-b-2 transition-colors ${
                   activeTab === tab.id
                     ? 'border-brand-500 text-brand-700 bg-brand-50/30'
@@ -813,7 +979,7 @@ export default function CampaignDetailPage() {
               <div className="space-y-4">
                 <div className="flex items-center justify-between gap-3">
                   <p className="text-sm text-gray-600">
-                    {leads.length} leads en esta campaña
+                    {campLeadsTotal} leads en esta campaña
                     {selectedToRemove.size > 0 && (
                       <span className="ml-2 text-red-600">· {selectedToRemove.size} seleccionados</span>
                     )}
@@ -838,7 +1004,7 @@ export default function CampaignDetailPage() {
                   </div>
                 </div>
 
-                {leads.length === 0 ? (
+                {leads.length === 0 && campLeadsTotal === 0 ? (
                   <div className="py-12 text-center">
                     <Users className="w-10 h-10 text-gray-200 mx-auto mb-3" />
                     <p className="text-sm text-gray-500 mb-4">Esta campaña no tiene leads todavía.</p>
@@ -909,6 +1075,32 @@ export default function CampaignDetailPage() {
                         ))}
                       </tbody>
                     </table>
+                  </div>
+                )}
+
+                {/* Paginación de leads */}
+                {campLeadsTotal > CAMP_LEADS_PER_PAGE && (
+                  <div className="flex items-center justify-between pt-3 border-t border-gray-100">
+                    <p className="text-xs text-gray-500">
+                      {((campLeadsPage - 1) * CAMP_LEADS_PER_PAGE) + 1}–{Math.min(campLeadsPage * CAMP_LEADS_PER_PAGE, campLeadsTotal)} de {campLeadsTotal} leads
+                    </p>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-gray-400">Pág. {campLeadsPage} / {Math.ceil(campLeadsTotal / CAMP_LEADS_PER_PAGE)}</span>
+                      <button
+                        onClick={() => setCampLeadsPage(p => p - 1)}
+                        disabled={campLeadsPage === 1}
+                        className="btn-secondary text-xs py-1.5 disabled:opacity-40"
+                      >
+                        <ChevronLeft className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        onClick={() => setCampLeadsPage(p => p + 1)}
+                        disabled={campLeadsPage >= Math.ceil(campLeadsTotal / CAMP_LEADS_PER_PAGE)}
+                        className="btn-secondary text-xs py-1.5 disabled:opacity-40"
+                      >
+                        <ChevronRight className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
@@ -1150,23 +1342,45 @@ export default function CampaignDetailPage() {
                                           <div className="flex items-center justify-between mb-1">
                                             <label className="label text-xs">Cuerpo del email</label>
                                             {!isSent && !isSkipped && (
-                                              <button
-                                                onClick={() => setEditingBodyStepId(editingBodyStepId === step.id ? null : step.id)}
-                                                className="text-xs text-brand-600 hover:underline flex items-center gap-1"
-                                              >
-                                                {editingBodyStepId === step.id ? '👁 Ver preview' : '✏️ Editar texto'}
-                                              </button>
+                                              <div className="flex items-center gap-1">
+                                                {(['texto', 'html', 'preview'] as const).map(mode => (
+                                                  <button
+                                                    key={mode}
+                                                    onClick={() => setEditingBodyStepId(
+                                                      editingBodyStepId === `${step.id}-${mode}` ? null : `${step.id}-${mode}`
+                                                    )}
+                                                    className={`text-xs px-2 py-0.5 rounded-md font-medium transition-colors ${
+                                                      editingBodyStepId === `${step.id}-${mode}`
+                                                        ? mode === 'texto' ? 'bg-brand-100 text-brand-700'
+                                                          : mode === 'html' ? 'bg-amber-100 text-amber-700'
+                                                          : 'bg-green-100 text-green-700'
+                                                        : 'text-gray-400 hover:bg-gray-100'
+                                                    }`}
+                                                  >
+                                                    {mode === 'texto' ? '✏️ Texto' : mode === 'html' ? '</> HTML' : '👁 Preview'}
+                                                  </button>
+                                                ))}
+                                              </div>
                                             )}
                                           </div>
-                                          {editingBodyStepId === step.id && !isSent && !isSkipped ? (
+                                          {editingBodyStepId === `${step.id}-texto` && !isSent && !isSkipped ? (
+                                            <RichTextEditor
+                                              value={edits.body !== undefined ? edits.body : currentBody}
+                                              onChange={v => setStepEdits(prev => ({
+                                                ...prev,
+                                                [step.id]: { ...prev[step.id], body: v }
+                                              }))}
+                                              placeholder="Escribe el cuerpo del email... (puedes añadir emojis 😊)"
+                                            />
+                                          ) : editingBodyStepId === `${step.id}-html` && !isSent && !isSkipped ? (
                                             <textarea
-                                              className="input resize-y text-sm leading-relaxed w-full"
-                                              rows={12}
-                                              placeholder="Escribe el cuerpo del email... (puedes añadir emojis desde tu teclado 😊)"
-                                              value={edits.body !== undefined ? htmlToText(edits.body) : htmlToText(currentBody)}
+                                              className="input resize-y text-xs leading-relaxed w-full font-mono"
+                                              rows={14}
+                                              placeholder="Código HTML del email..."
+                                              value={edits.body !== undefined ? edits.body : currentBody}
                                               onChange={e => setStepEdits(prev => ({
                                                 ...prev,
-                                                [step.id]: { ...prev[step.id], body: textToHtml(e.target.value) }
+                                                [step.id]: { ...prev[step.id], body: e.target.value }
                                               }))}
                                             />
                                           ) : (
@@ -1251,6 +1465,185 @@ export default function CampaignDetailPage() {
                 )}
               </div>
             )})()}
+
+            {/* ══ TAB: ANALÍTICAS ══ */}
+            {activeTab === 'analytics' && (
+              <div className="space-y-4">
+                {analyticsLoading ? (
+                  <div className="py-16 flex flex-col items-center gap-3 text-gray-400">
+                    <Loader2 className="w-6 h-6 animate-spin" />
+                    <p className="text-sm">Cargando analíticas...</p>
+                  </div>
+                ) : (
+                  <>
+                    {/* Toolbar */}
+                    <div className="flex flex-wrap items-center gap-2 justify-between">
+                      <div className="relative flex-1 min-w-[180px] max-w-xs">
+                        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400 pointer-events-none" />
+                        <input
+                          className="input pl-8 text-xs py-1.5"
+                          placeholder="Buscar empresa, email..."
+                          value={analyticsSearch}
+                          onChange={e => setAnalyticsSearch(e.target.value)}
+                        />
+                      </div>
+                      <div className="flex gap-2 shrink-0">
+                        <button
+                          onClick={() => { setAnalyticsLoaded(false); loadAnalytics() }}
+                          className="btn-secondary text-xs py-1.5"
+                          title="Recargar datos"
+                        >
+                          <TrendingUp className="w-3.5 h-3.5" /> Recargar
+                        </button>
+                        <button
+                          onClick={exportAnalyticsExcel}
+                          className="btn-secondary text-xs py-1.5"
+                          disabled={sortedAnalytics.length === 0}
+                        >
+                          <FileText className="w-3.5 h-3.5" /> Excel
+                        </button>
+                        <button
+                          onClick={exportAnalyticsPDF}
+                          className="btn-primary text-xs py-1.5"
+                          disabled={sortedAnalytics.length === 0}
+                        >
+                          <FileText className="w-3.5 h-3.5" /> PDF Ejecutivo
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* KPI summary */}
+                    {analyticsData.length > 0 && (() => {
+                      const total = analyticsData.length
+                      const totalSent = analyticsData.reduce((s, r) => s + r.sent, 0)
+                      const totalOpened = analyticsData.reduce((s, r) => s + r.opened, 0)
+                      const totalClicked = analyticsData.reduce((s, r) => s + r.clicked, 0)
+                      const totalReplied = analyticsData.reduce((s, r) => s + r.replied, 0)
+                      const openRate = totalSent > 0 ? Math.round((totalOpened / totalSent) * 100) : 0
+                      const replyRate = totalSent > 0 ? Math.round((totalReplied / totalSent) * 100) : 0
+                      return (
+                        <div className="grid grid-cols-3 sm:grid-cols-6 gap-3">
+                          {[
+                            { label: 'Leads', val: total, color: 'bg-gray-50 text-gray-700' },
+                            { label: 'Enviados', val: totalSent, color: 'bg-blue-50 text-blue-700' },
+                            { label: 'Abiertos', val: totalOpened, color: 'bg-sky-50 text-sky-700' },
+                            { label: 'Clicados', val: totalClicked, color: 'bg-violet-50 text-violet-700' },
+                            { label: 'Respondidos', val: totalReplied, color: 'bg-green-50 text-green-700' },
+                            { label: 'Tasa apertura', val: `${openRate}%`, color: 'bg-brand-50 text-brand-700' },
+                          ].map(k => (
+                            <div key={k.label} className={`rounded-xl p-3 text-center ${k.color}`}>
+                              <p className="text-xl font-bold">{k.val}</p>
+                              <p className="text-xs opacity-70 mt-0.5">{k.label}</p>
+                            </div>
+                          ))}
+                        </div>
+                      )
+                    })()}
+
+                    {/* Tabla */}
+                    {sortedAnalytics.length === 0 ? (
+                      <div className="py-12 text-center text-gray-400 text-sm">
+                        {analyticsData.length === 0 ? 'No hay datos de email para esta campaña aún.' : 'No hay resultados para esa búsqueda.'}
+                      </div>
+                    ) : (
+                      <div className="overflow-x-auto rounded-xl border border-gray-100">
+                        <table className="w-full text-xs">
+                          <thead>
+                            <tr className="bg-gray-50 border-b border-gray-100">
+                              {([
+                                { col: 'company_name', label: 'Empresa' },
+                                { col: 'email', label: 'Email' },
+                                { col: 'status', label: 'Estado' },
+                                { col: 'score', label: 'Score' },
+                                { col: 'sent', label: 'Enviados' },
+                                { col: 'opened', label: 'Abiertos' },
+                                { col: 'clicked', label: 'Clicados' },
+                                { col: 'replied', label: 'Respondidos' },
+                                { col: 'open_rate', label: 'Apertura %' },
+                                { col: 'reply_rate', label: 'Respuesta %' },
+                                { col: 'has_active_sequence', label: 'Secuencia' },
+                              ] as { col: typeof analyticsSort.col; label: string }[]).map(({ col, label }) => (
+                                <th
+                                  key={col}
+                                  onClick={() => toggleAnalyticsSort(col)}
+                                  className="px-3 py-2.5 text-left font-semibold text-gray-600 cursor-pointer hover:text-brand-700 select-none whitespace-nowrap"
+                                >
+                                  <span className="flex items-center gap-1">
+                                    {label}
+                                    {analyticsSort.col === col
+                                      ? (analyticsSort.dir === 'asc' ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />)
+                                      : <span className="w-3 h-3 opacity-30"><ChevronDown className="w-3 h-3" /></span>}
+                                  </span>
+                                </th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {sortedAnalytics.map((row, i) => (
+                              <tr key={row.lead_id} className={`border-b border-gray-50 hover:bg-gray-50/60 transition-colors ${i % 2 === 0 ? '' : 'bg-gray-50/30'}`}>
+                                <td className="px-3 py-2.5">
+                                  <p className="font-medium text-gray-900 truncate max-w-[140px]">{row.company_name}</p>
+                                  {row.contact_name && <p className="text-gray-400 text-xs">{row.contact_name}</p>}
+                                </td>
+                                <td className="px-3 py-2.5 text-gray-500 truncate max-w-[140px]">{row.email}</td>
+                                <td className="px-3 py-2.5">
+                                  <span className={`badge text-xs ${statusColor(row.status)}`}>{statusLabel(row.status)}</span>
+                                </td>
+                                <td className="px-3 py-2.5">
+                                  <span className={`badge text-xs ${scoreToBg(row.score)}`}>{row.score}</span>
+                                </td>
+                                <td className="px-3 py-2.5 text-gray-700 font-medium">{row.sent}</td>
+                                <td className="px-3 py-2.5">
+                                  {row.opened > 0
+                                    ? <span className="bg-sky-100 text-sky-700 px-1.5 py-0.5 rounded-full font-semibold">{row.opened}</span>
+                                    : <span className="text-gray-300">0</span>}
+                                </td>
+                                <td className="px-3 py-2.5">
+                                  {row.clicked > 0
+                                    ? <span className="bg-violet-100 text-violet-700 px-1.5 py-0.5 rounded-full font-semibold">{row.clicked}</span>
+                                    : <span className="text-gray-300">0</span>}
+                                </td>
+                                <td className="px-3 py-2.5">
+                                  {row.replied > 0
+                                    ? <span className="bg-green-100 text-green-700 px-1.5 py-0.5 rounded-full font-semibold">{row.replied}</span>
+                                    : <span className="text-gray-300">0</span>}
+                                </td>
+                                <td className="px-3 py-2.5">
+                                  <div className="flex items-center gap-1.5">
+                                    <div className="w-10 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                                      <div className="h-full bg-sky-400 rounded-full" style={{ width: `${row.open_rate}%` }} />
+                                    </div>
+                                    <span className="text-gray-600">{row.open_rate}%</span>
+                                  </div>
+                                </td>
+                                <td className="px-3 py-2.5">
+                                  <div className="flex items-center gap-1.5">
+                                    <div className="w-10 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                                      <div className="h-full bg-green-400 rounded-full" style={{ width: `${row.reply_rate}%` }} />
+                                    </div>
+                                    <span className="text-gray-600">{row.reply_rate}%</span>
+                                  </div>
+                                </td>
+                                <td className="px-3 py-2.5">
+                                  {row.has_active_sequence
+                                    ? <span className="text-green-600 font-medium">🟢 Activa</span>
+                                    : row.sequence_completed
+                                    ? <span className="text-blue-600 font-medium">✅ Completada</span>
+                                    : <span className="text-gray-300">—</span>}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                        <p className="text-xs text-gray-400 text-right p-2 border-t border-gray-100">
+                          {sortedAnalytics.length} de {analyticsData.length} leads
+                        </p>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
 
             {/* ══ TAB: AJUSTES ══ */}
             {activeTab === 'settings' && (

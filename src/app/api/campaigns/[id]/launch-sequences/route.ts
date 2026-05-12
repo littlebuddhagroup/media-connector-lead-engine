@@ -127,21 +127,48 @@ export async function POST(
       ? (savedTemplate.steps as TemplateStep[])
       : null
 
-  // Obtener leads de la campaña sin secuencia activa
-  let leadsQuery = supabase
+  // Obtener leads de la campaña — fuente 1: campaign_id directo en leads
+  const { data: directLeads } = await admin
     .from('leads')
     .select('id, company_name, email, sector, country, description, website, first_name, last_name, department, campaign_id')
     .eq('campaign_id', campaignId)
-    .eq('user_id', user.id)
+    .in('user_id', [user.id])
     .not('email', 'is', null)
 
-  if (filterLeadIds?.length) {
-    leadsQuery = leadsQuery.in('id', filterLeadIds)
+  // Fuente 2: leads añadidos via junction campaign_leads
+  const { data: junctionRows } = await admin
+    .from('campaign_leads')
+    .select('lead_id')
+    .eq('campaign_id', campaignId)
+    .eq('user_id', user.id)
+
+  const junctionLeadIds = (junctionRows ?? []).map((r: { lead_id: string }) => r.lead_id)
+
+  let junctionLeads: typeof directLeads = []
+  if (junctionLeadIds.length > 0) {
+    const { data } = await admin
+      .from('leads')
+      .select('id, company_name, email, sector, country, description, website, first_name, last_name, department, campaign_id')
+      .in('id', junctionLeadIds)
+      .not('email', 'is', null)
+    junctionLeads = data ?? []
   }
 
-  const { data: allLeads } = await leadsQuery
+  // Merge y deduplicar por id
+  const seenIds = new Set<string>()
+  const mergedLeads = [...(directLeads ?? []), ...junctionLeads].filter(l => {
+    if (seenIds.has(l.id)) return false
+    seenIds.add(l.id)
+    return true
+  })
 
-  if (!allLeads?.length) {
+  let allLeads = mergedLeads
+
+  if (filterLeadIds?.length) {
+    allLeads = allLeads.filter(l => filterLeadIds.includes(l.id))
+  }
+
+  if (!allLeads.length) {
     return NextResponse.json({ error: 'No hay leads con email en esta campaña' }, { status: 400 })
   }
 

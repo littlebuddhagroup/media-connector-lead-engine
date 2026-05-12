@@ -32,12 +32,13 @@ export async function POST(request: Request) {
   const {
     name, subject, body_html, body_text,
     from_email, from_name, reply_to,
-    scheduled_for, target_type, target_list_id, target_filters,
+    scheduled_for, target_list_ids,
   } = body
 
   if (!name?.trim()) return NextResponse.json({ error: 'Nombre requerido' }, { status: 400 })
   if (!subject?.trim()) return NextResponse.json({ error: 'Asunto requerido' }, { status: 400 })
   if (!body_html?.trim()) return NextResponse.json({ error: 'Cuerpo del newsletter requerido' }, { status: 400 })
+  if (!target_list_ids?.length) return NextResponse.json({ error: 'Selecciona al menos una lista de destinatarios' }, { status: 400 })
 
   // Obtener configuración de email del usuario como fallback
   const admin = createAdminClient()
@@ -59,9 +60,9 @@ export async function POST(request: Request) {
       reply_to: reply_to || '',
       status: scheduled_for ? 'scheduled' : 'draft',
       scheduled_for: scheduled_for || null,
-      target_type: target_type || 'all',
-      target_list_id: target_list_id || null,
-      target_filters: target_filters || null,
+      target_type: 'list',
+      target_list_ids: target_list_ids,
+      target_list_id: target_list_ids[0] ?? null, // backward compat
     })
     .select()
     .single()

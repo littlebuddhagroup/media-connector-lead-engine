@@ -181,6 +181,11 @@ export default function LeadsPage() {
   const [editListIcon, setEditListIcon] = useState(LIST_ICONS[0])
   const [savingListEdit, setSavingListEdit] = useState(false)
 
+  // Eliminar lista
+  const [deleteListModal, setDeleteListModal] = useState<{ id: string; name: string; memberCount: number } | null>(null)
+  const [deleteLeadsAlso, setDeleteLeadsAlso] = useState(false)
+  const [deletingList, setDeletingList] = useState(false)
+
   // Guardar vista
   const [showSaveView, setShowSaveView] = useState(false)
   const [newViewName, setNewViewName] = useState('')
@@ -277,12 +282,39 @@ export default function LeadsPage() {
   }
 
   // ─── Selección masiva ─────────────────────────────────────────
+  const [selectAllPages, setSelectAllPages] = useState(false)
+  const [loadingSelectAll, setLoadingSelectAll] = useState(false)
   const allSelected = leads.length > 0 && leads.every(l => selected.has(l.id))
   const someSelected = selected.size > 0
-  const toggleAll = () => allSelected ? setSelected(new Set()) : setSelected(new Set(leads.map(l => l.id)))
-  const toggleOne = (id: string) => setSelected(prev => {
-    const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next
-  })
+  const toggleAll = () => {
+    if (allSelected) { setSelected(new Set()); setSelectAllPages(false) }
+    else { setSelected(new Set(leads.map(l => l.id))); setSelectAllPages(false) }
+  }
+  const toggleOne = (id: string) => {
+    setSelectAllPages(false)
+    setSelected(prev => {
+      const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next
+    })
+  }
+
+  // Seleccionar TODOS los leads que coinciden con los filtros actuales (todas las páginas)
+  const handleSelectAllPages = async () => {
+    setLoadingSelectAll(true)
+    const params = new URLSearchParams({ per_page: '99999', page: '1', sort_by: sortBy, sort_order: sortDir })
+    if (search)       params.set('search', search)
+    if (status)       params.set('status', status)
+    if (priority)     params.set('priority', priority)
+    if (campaignId)   params.set('campaign_id', campaignId)
+    if (tag)          params.set('tag', tag)
+    if (sector)       params.set('sector', sector)
+    if (country)      params.set('country', country)
+    if (activeListId) params.set('list_id', activeListId)
+    const res = await fetch(`/api/leads?${params}`)
+    const json = await res.json()
+    setSelected(new Set((json.data ?? []).map((l: Lead) => l.id)))
+    setSelectAllPages(true)
+    setLoadingSelectAll(false)
+  }
 
   // ─── Borrado masivo ───────────────────────────────────────────
   const handleBulkDelete = async () => {
@@ -401,11 +433,29 @@ export default function LeadsPage() {
   }
 
   // ─── Eliminar lista ───────────────────────────────────────────
-  const handleDeleteList = async (listId: string, name: string) => {
-    if (!confirm(`¿Eliminar la lista "${name}"? Los leads no se borran.`)) return
-    await fetch(`/api/lists/${listId}`, { method: 'DELETE' })
-    if (activeListId === listId) applyList(null)
+  const handleDeleteList = (listId: string, name: string, memberCount: number) => {
+    setDeleteLeadsAlso(false)
+    setDeleteListModal({ id: listId, name, memberCount })
+  }
+
+  const handleConfirmDeleteList = async () => {
+    if (!deleteListModal) return
+    setDeletingList(true)
+    const url = deleteLeadsAlso
+      ? `/api/lists/${deleteListModal.id}?delete_leads=true`
+      : `/api/lists/${deleteListModal.id}`
+    await fetch(url, { method: 'DELETE' })
+    setDeletingList(false)
+    if (activeListId === deleteListModal.id) applyList(null)
+    setDeleteListModal(null)
     fetchSidebar()
+    fetchLeads()
+    toast.success(
+      'Lista eliminada',
+      deleteLeadsAlso
+        ? `"${deleteListModal.name}" y sus ${deleteListModal.memberCount} leads han sido eliminados.`
+        : `"${deleteListModal.name}" eliminada. Los leads se han conservado.`
+    )
   }
 
   // ─── Guardar vista ────────────────────────────────────────────
@@ -700,7 +750,7 @@ export default function LeadsPage() {
                         Cancelar
                       </button>
                       <button
-                        onClick={() => { setEditingListId(null); handleDeleteList(l.id, l.name) }}
+                        onClick={() => { setEditingListId(null); handleDeleteList(l.id, l.name, l.member_count) }}
                         className="text-xs border border-red-200 text-red-500 py-1 px-2 rounded-md hover:bg-red-50 transition-colors flex items-center gap-1"
                         title="Eliminar lista"
                       >
@@ -873,33 +923,64 @@ export default function LeadsPage() {
 
           {/* Barra de acciones masivas */}
           {someSelected && (
-            <div className="flex items-center gap-3 px-4 py-3 bg-brand-50 border border-brand-200 rounded-xl">
-              <span className="text-sm font-medium text-brand-800">
-                {selected.size} lead{selected.size !== 1 ? 's' : ''} seleccionado{selected.size !== 1 ? 's' : ''}
-              </span>
-              <div className="flex items-center gap-2 ml-auto flex-wrap">
-                <>
-                  <button onClick={() => { setAddToListId(''); setShowAddToListModal(true) }}
-                    className="btn-secondary text-xs py-1.5">
-                    <Folder className="w-3.5 h-3.5" /> Añadir a lista
+            <div className="space-y-2">
+              <div className="flex items-center gap-3 px-4 py-3 bg-brand-50 border border-brand-200 rounded-xl">
+                <span className="text-sm font-medium text-brand-800">
+                  {selectAllPages
+                    ? <><CheckSquare className="w-4 h-4 inline mr-1 text-brand-600" />{selected.size} leads seleccionados (todas las páginas)</>
+                    : <>{selected.size} lead{selected.size !== 1 ? 's' : ''} seleccionado{selected.size !== 1 ? 's' : ''}</>
+                  }
+                </span>
+                <div className="flex items-center gap-2 ml-auto flex-wrap">
+                  <>
+                    <button onClick={() => { setAddToListId(''); setShowAddToListModal(true) }}
+                      className="btn-secondary text-xs py-1.5">
+                      <Folder className="w-3.5 h-3.5" /> Añadir a lista
+                    </button>
+                    <button onClick={() => { setAssignCampaignId(''); setShowAssignModal(true) }}
+                      className="btn-secondary text-xs py-1.5">
+                      <Target className="w-3.5 h-3.5" /> Asignar campaña
+                    </button>
+                    <button onClick={handleBulkEnrich} disabled={!!enrichJob} className="btn-secondary text-xs py-1.5 disabled:opacity-50">
+                      <Zap className="w-3.5 h-3.5" /> Enriquecer con IA
+                    </button>
+                    <button onClick={handleBulkDelete} disabled={deleting}
+                      className="text-xs py-1.5 px-3 rounded-lg border border-red-200 text-red-600 hover:bg-red-50 transition-colors flex items-center gap-1.5">
+                      {deleting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                      Eliminar
+                    </button>
+                  </>
+                  <button onClick={() => { setSelected(new Set()); setSelectAllPages(false) }} className="btn-secondary text-xs py-1.5">
+                    <X className="w-3.5 h-3.5" />
                   </button>
-                  <button onClick={() => { setAssignCampaignId(''); setShowAssignModal(true) }}
-                    className="btn-secondary text-xs py-1.5">
-                    <Target className="w-3.5 h-3.5" /> Asignar campaña
-                  </button>
-                  <button onClick={handleBulkEnrich} disabled={!!enrichJob} className="btn-secondary text-xs py-1.5 disabled:opacity-50">
-                    <Zap className="w-3.5 h-3.5" /> Enriquecer con IA
-                  </button>
-                  <button onClick={handleBulkDelete} disabled={deleting}
-                    className="text-xs py-1.5 px-3 rounded-lg border border-red-200 text-red-600 hover:bg-red-50 transition-colors flex items-center gap-1.5">
-                    {deleting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
-                    Eliminar
-                  </button>
-                </>
-                <button onClick={() => setSelected(new Set())} className="btn-secondary text-xs py-1.5">
-                  <X className="w-3.5 h-3.5" />
-                </button>
+                </div>
               </div>
+              {/* Banner seleccionar todas las páginas */}
+              {allSelected && !selectAllPages && total > perPage && (
+                <div className="flex items-center justify-center gap-3 px-4 py-2 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-800">
+                  <span>Has seleccionado los {leads.length} leads de esta página.</span>
+                  <button
+                    onClick={handleSelectAllPages}
+                    disabled={loadingSelectAll}
+                    className="font-semibold text-amber-700 underline hover:text-amber-900 flex items-center gap-1"
+                  >
+                    {loadingSelectAll ? <Loader2 className="w-3 h-3 animate-spin" /> : <CheckSquare className="w-3 h-3" />}
+                    Seleccionar todos los {total} leads
+                  </button>
+                </div>
+              )}
+              {selectAllPages && (
+                <div className="flex items-center justify-center gap-3 px-4 py-2 bg-green-50 border border-green-200 rounded-xl text-xs text-green-800">
+                  <CheckSquare className="w-3.5 h-3.5 text-green-600" />
+                  <span>Todos los <strong>{selected.size}</strong> leads están seleccionados.</span>
+                  <button
+                    onClick={() => { setSelected(new Set(leads.map(l => l.id))); setSelectAllPages(false) }}
+                    className="underline hover:text-green-900"
+                  >
+                    Cancelar selección global
+                  </button>
+                </div>
+              )}
             </div>
           )}
 
@@ -1199,6 +1280,75 @@ export default function LeadsPage() {
           </span>
         </div>
       )}
+
+      {/* Modal: Eliminar lista */}
+      <Modal
+        isOpen={!!deleteListModal}
+        onClose={() => !deletingList && setDeleteListModal(null)}
+        title="Eliminar lista"
+        size="sm"
+      >
+        {deleteListModal && (
+          <div className="space-y-4">
+            <p className="text-sm text-gray-700">
+              Vas a eliminar la lista <strong>&ldquo;{deleteListModal.name}&rdquo;</strong>
+              {deleteListModal.memberCount > 0
+                ? ` que contiene ${deleteListModal.memberCount} lead${deleteListModal.memberCount !== 1 ? 's' : ''}.`
+                : '.'}
+            </p>
+
+            {deleteListModal.memberCount > 0 && (
+              <label className="flex items-start gap-3 p-3 rounded-xl border border-red-200 bg-red-50 cursor-pointer hover:bg-red-100 transition-colors">
+                <input
+                  type="checkbox"
+                  checked={deleteLeadsAlso}
+                  onChange={e => setDeleteLeadsAlso(e.target.checked)}
+                  className="mt-0.5 accent-red-600 w-4 h-4 shrink-0"
+                />
+                <div>
+                  <p className="text-sm font-semibold text-red-700">
+                    Eliminar también los {deleteListModal.memberCount} leads de esta lista
+                  </p>
+                  <p className="text-xs text-red-500 mt-0.5">
+                    Esta acción es irreversible. Los leads se borrarán permanentemente.
+                  </p>
+                </div>
+              </label>
+            )}
+
+            {!deleteLeadsAlso && (
+              <p className="text-xs text-gray-400">
+                Los leads se conservarán en la base de datos. Solo se eliminará la lista y sus asignaciones.
+              </p>
+            )}
+
+            <div className="flex gap-2 justify-end pt-1">
+              <button
+                onClick={() => setDeleteListModal(null)}
+                disabled={deletingList}
+                className="btn-secondary text-xs"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleConfirmDeleteList}
+                disabled={deletingList}
+                className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg font-semibold text-white transition-colors disabled:opacity-50 ${
+                  deleteLeadsAlso ? 'bg-red-600 hover:bg-red-700' : 'bg-gray-700 hover:bg-gray-800'
+                }`}
+              >
+                {deletingList
+                  ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Eliminando…</>
+                  : deleteLeadsAlso
+                    ? <><Trash2 className="w-3.5 h-3.5" /> Eliminar lista y leads</>
+                    : <><Trash2 className="w-3.5 h-3.5" /> Eliminar solo la lista</>
+                }
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
     </div>
   )
 }

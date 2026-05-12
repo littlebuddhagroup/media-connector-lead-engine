@@ -358,7 +358,10 @@ ${deptPainPoints ? `\nÁNGULO ESPECÍFICO POR SU DEPARTAMENTO:\n${deptPainPoints
 ${additionalContext ? `- Contexto adicional: ${additionalContext}` : ''}
 
 INSTRUCCIONES ESPECÍFICAS:
-- NOMBRE REGLA GLOBAL: usa ÚNICAMENTE el nombre de pila "${firstName ?? ''}" en el saludo y en todo el cuerpo. JAMÁS uses el apellido. Si no hay nombre, usa saludo genérico.
+${firstName
+  ? `- NOMBRE REGLA GLOBAL: usa ÚNICAMENTE el nombre de pila "${firstName}" en el saludo y en todo el cuerpo. JAMÁS uses el apellido ni ningún apellido.`
+  : `- NOMBRE REGLA GLOBAL: este lead NO tiene nombre registrado. ABSOLUTAMENTE PROHIBIDO usar cualquier placeholder o variable de nombre como {{contactname}}, {{nombre}}, {{name}}, [Name], [Nombre], [Contact], {{firstName}}, [NOMBRE] o cualquier corchete/llave con nombre. El saludo y el cuerpo completo deben ir SIN nombre de contacto, usando un saludo genérico directo en ${langName}.`
+}
 ${type === 'initial_email' ? `- SALUDO OBLIGATORIO: ${firstName
     ? `La PRIMERA línea del email DEBE ser el saludo apropiado en ${langName} seguido de "${firstName}," (ej: "Hi ${firstName}," en inglés, "Hola ${firstName}," en español, "Bonjour ${firstName}," en francés) — solo el nombre de pila, sin apellido`
     : `No tienes nombre de contacto, usa un saludo genérico apropiado en ${langName} (nunca inventes un nombre)`}

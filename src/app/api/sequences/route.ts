@@ -4,6 +4,53 @@ import { createAdminClient } from '@/lib/supabase/server'
 import { generateMessage, enrichLeadWithAI } from '@/services/aiService'
 import { getUserAISettings } from '@/lib/getUserAIProvider'
 
+// ─── Asuntos de fallback por idioma ──────────────────────────────────────────
+function getDefaultSubjects(language: string, companyName: string) {
+  const subjects: Record<string, [string, string, string]> = {
+    es: [
+      `Presentación MyMediaConnect para ${companyName}`,
+      '¿Has tenido ocasión de revisar mi mensaje?',
+      `Último intento — ¿Te interesa el tema?`,
+    ],
+    en: [
+      `MyMediaConnect introduction for ${companyName}`,
+      'Have you had a chance to look at my message?',
+      `Last attempt — interested in the topic?`,
+    ],
+    fr: [
+      `Présentation MyMediaConnect pour ${companyName}`,
+      'Avez-vous eu l\'occasion de lire mon message ?',
+      `Dernière tentative — le sujet vous intéresse ?`,
+    ],
+    de: [
+      `MyMediaConnect Präsentation für ${companyName}`,
+      'Hatten Sie Gelegenheit, meine Nachricht zu lesen?',
+      `Letzter Versuch — interessiert Sie das Thema?`,
+    ],
+    it: [
+      `Presentazione MyMediaConnect per ${companyName}`,
+      'Ha avuto modo di leggere il mio messaggio?',
+      `Ultimo tentativo — l'argomento ti interessa?`,
+    ],
+    pt: [
+      `Apresentação MyMediaConnect para ${companyName}`,
+      'Teve oportunidade de ver a minha mensagem?',
+      `Última tentativa — tem interesse no assunto?`,
+    ],
+    nl: [
+      `MyMediaConnect introductie voor ${companyName}`,
+      'Heeft u de kans gehad mijn bericht te lezen?',
+      `Laatste poging — bent u geïnteresseerd in het onderwerp?`,
+    ],
+    ca: [
+      `Presentació MyMediaConnect per ${companyName}`,
+      'Has tingut ocasió de llegir el meu missatge?',
+      `Últim intent — t'interessa el tema?`,
+    ],
+  }
+  return subjects[language] ?? subjects['es']
+}
+
 // ============================================================
 // SECUENCIAS — API para crear y gestionar secuencias 3 toques
 // ============================================================
@@ -114,10 +161,11 @@ export async function POST(request: Request) {
         generateMessage(lead, enrichment, 'followup_2', 'cercano', undefined, false, language, aiProvider, aiModel),
       ])
 
+      const fallback = getDefaultSubjects(language, lead.company_name)
       steps = [
-        { step_number: 1, subject: email1.subject ?? `Presentación MyMediaConnect para ${lead.company_name}`, body: email1.body, delay_days: 0 },
-        { step_number: 2, subject: email2.subject ?? `Re: ¿Has tenido ocasión de revisar mi mensaje?`, body: email2.body, delay_days: 5 },
-        { step_number: 3, subject: email3.subject ?? `Último intento — ¿Te interesa el tema?`, body: email3.body, delay_days: 10 },
+        { step_number: 1, subject: email1.subject ?? fallback[0], body: email1.body, delay_days: 0 },
+        { step_number: 2, subject: email2.subject ?? fallback[1], body: email2.body, delay_days: 5 },
+        { step_number: 3, subject: email3.subject ?? fallback[2], body: email3.body, delay_days: 10 },
       ]
     } catch (err) {
       return NextResponse.json({ error: 'Error generando mensajes con IA: ' + (err instanceof Error ? err.message : 'Unknown') }, { status: 500 })
@@ -281,10 +329,11 @@ export async function PATCH(request: Request) {
         generateMessage(lead, enrichment, 'followup_1', 'directo', undefined, false, language, aiProvider, aiModel),
         generateMessage(lead, enrichment, 'followup_2', 'cercano', undefined, false, language, aiProvider, aiModel),
       ])
+      const fallback = getDefaultSubjects(language, lead.company_name)
       steps = [
-        { step_number: 1, subject: email1.subject ?? `Presentación MyMediaConnect para ${lead.company_name}`, body: email1.body, delay_days: 0 },
-        { step_number: 2, subject: email2.subject ?? `Re: ¿Has tenido ocasión de revisar mi mensaje?`, body: email2.body, delay_days: 5 },
-        { step_number: 3, subject: email3.subject ?? `Último intento — ¿Te interesa el tema?`, body: email3.body, delay_days: 10 },
+        { step_number: 1, subject: email1.subject ?? fallback[0], body: email1.body, delay_days: 0 },
+        { step_number: 2, subject: email2.subject ?? fallback[1], body: email2.body, delay_days: 5 },
+        { step_number: 3, subject: email3.subject ?? fallback[2], body: email3.body, delay_days: 10 },
       ]
     } catch (err) {
       return NextResponse.json({ error: 'Error regenerando mensajes con IA: ' + (err instanceof Error ? err.message : 'Unknown') }, { status: 500 })

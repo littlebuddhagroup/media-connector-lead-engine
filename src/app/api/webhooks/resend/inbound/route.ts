@@ -17,6 +17,9 @@ import { createAdminClient } from '@/lib/supabase/server'
 // ============================================================
 
 export async function POST(request: Request) {
+  // NOTA: Los webhooks de email inbound de Resend NO usan firma Svix —
+  // NO aplicar aquí el RESEND_WEBHOOK_SECRET, que es solo para delivery events.
+
   let payload: Record<string, unknown>
   try {
     payload = await request.json()
@@ -26,20 +29,32 @@ export async function POST(request: Request) {
 
   const supabase = createAdminClient()
 
-  const fromEmail  = (payload.from as string | undefined) ?? ''
-  const toEmail    = (payload.to as string | undefined) ?? ''
-  const subject    = (payload.subject as string | undefined) ?? ''
-  const bodyText   = (payload.text as string | undefined) ?? ''
-  const bodyHtml   = (payload.html as string | undefined) ?? ''
-  const inReplyTo  = (payload.in_reply_to as string | undefined) ?? ''
-  const references = (payload.references as string | undefined) ?? ''
+  // Resend puede enviar inbound en formato plano o anidado en { data: {...} }
+  const data = (payload.data as Record<string, unknown> | undefined) ?? payload
+
+  const fromEmail  = (data.from as string | undefined) ?? ''
+  // "to" puede ser string, array de strings, o string con display name
+  const toRaw      = data.to
+  const toEmail    = Array.isArray(toRaw) ? (toRaw as string[]).join(' ') : (toRaw as string | undefined) ?? ''
+  const subject    = (data.subject as string | undefined) ?? ''
+  const bodyText   = (data.text as string | undefined) ?? ''
+  const bodyHtml   = (data.html as string | undefined) ?? ''
+  const inReplyTo  = (data.in_reply_to as string | undefined) ?? ''
+  const references = (data.references as string | undefined) ?? ''
 
   // ── Método 1: extraer lead_id del campo "to" (reply+{lead_id}@subdominio)
   // Patrón: reply+UUID@reply.mymediaconnect.com
+  // También busca en subject/headers por si el MTA reescribe el "to"
   let leadId: string | null = null
   const uuidRegex = /reply\+([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i
-  const match = toEmail.match(uuidRegex)
-  if (match?.[1]) leadId = match[1]
+
+  // Buscar UUID en to, subject e in_reply_to (máxima cobertura)
+  const searchTargets = [toEmail, subject, inReplyTo, JSON.stringify(data.headers ?? {})]
+  let match: RegExpMatchArray | null = null
+  for (const target of searchTargets) {
+    match = target.match(uuidRegex)
+    if (match?.[1]) { leadId = match[1]; break }
+  }
 
   // ── Método 2 (fallback): buscar por email del remitente
   let lead: { id: string; user_id: string; email: string; status: string } | null = null
@@ -158,5 +173,16 @@ export async function POST(request: Request) {
     lead_id:            lead.id,
     detection_method:   match ? 'reply_to_address' : 'sender_email',
     sequence_cancelled: !!activeSeq,
+  })
+}
+
+// GET — endpoint de salud para verificar que el webhook es accesible
+export async function GET() {
+  return NextResponse.json({
+    ok: true,
+    endpoint: '/api/webhooks/resend/inbound',
+    method:   'POST',
+    status:   'listening',
+    note:     'Enviar POST con payload de email inbound de Resend',
   })
 }

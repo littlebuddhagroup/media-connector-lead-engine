@@ -5,16 +5,25 @@ import TopBar from '@/components/layout/TopBar'
 import {
   Users, Mail, TrendingUp, Megaphone,
   Calendar, ArrowUpRight, Clock, CheckCircle,
-  Zap, MailOpen, MessageSquareReply
+  Zap, MailOpen, MessageSquareReply, ChevronLeft, ChevronRight
 } from 'lucide-react'
 import Link from 'next/link'
 import { formatDateRelative, statusLabel, statusColor, scoreToBg } from '@/lib/utils'
 import { getTeamUserIds } from '@/lib/teams'
 
-export default async function DashboardPage() {
+const ACTIVITY_PER_PAGE = 8
+
+export default async function DashboardPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ activity_page?: string }>
+}) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/login')
+
+  const { activity_page } = await searchParams
+  const actPage = Math.max(1, parseInt(activity_page ?? '1', 10))
 
   const admin = createAdminClient()
 
@@ -22,7 +31,7 @@ export default async function DashboardPage() {
   const teamUserIds = await getTeamUserIds(user.id)
 
   // Stats en paralelo — todos los miembros del equipo
-  const [leadsRes, emailsRes, campaignsRes, activityRes, seqEmailsRes, campaignLeadsRes] = await Promise.all([
+  const [leadsRes, emailsRes, campaignsRes, activityRes, seqEmailsRes, campaignLeadsRes, junctionRes] = await Promise.all([
     admin.from('leads')
       .select('id, status, score, created_at, priority')
       .in('user_id', teamUserIds),
@@ -34,10 +43,10 @@ export default async function DashboardPage() {
       .in('user_id', teamUserIds)
       .order('created_at', { ascending: false }),
     admin.from('activity_logs')
-      .select('id, type, title, created_at, lead_id')
+      .select('id, type, title, created_at, lead_id', { count: 'exact' })
       .in('user_id', teamUserIds)
       .order('created_at', { ascending: false })
-      .limit(10),
+      .range((actPage - 1) * ACTIVITY_PER_PAGE, actPage * ACTIVITY_PER_PAGE - 1),
     // Emails enviados por secuencias
     admin.from('sequence_steps')
       .select('id, status, sent_at')
@@ -47,6 +56,10 @@ export default async function DashboardPage() {
     admin.from('leads')
       .select('id, campaign_id, status')
       .in('user_id', teamUserIds)
+      .not('campaign_id', 'is', null),
+    // Fuente 2: junction table campaign_leads (many-to-many)
+    admin.from('campaign_leads')
+      .select('campaign_id, lead_id')
       .not('campaign_id', 'is', null),
   ])
 
@@ -59,12 +72,20 @@ export default async function DashboardPage() {
   const leads       = (leadsRes.data      ?? []) as LeadRow[]
   const emails      = (emailsRes.data     ?? []) as EmailRow[]
   const campaigns   = (campaignsRes.data  ?? []) as CampaignRow[]
-  const activities  = (activityRes.data   ?? []) as ActivityRow[]
+  const activities      = (activityRes.data   ?? []) as ActivityRow[]
+  const activityTotal   = activityRes.count ?? 0
+  const activityPages   = Math.min(5, Math.max(1, Math.ceil(activityTotal / ACTIVITY_PER_PAGE)))
   const seqEmailsSent = (seqEmailsRes.data ?? []) as SeqRow[]
   // campaignLeadsRes puede fallar si la tabla no existe aún — usamos fallback vacío
   const campaignLeadsData = (!campaignLeadsRes.error ? campaignLeadsRes.data : null) ?? []
+  // junction table campaign_leads — fallback vacío si no existe
+  const junctionData = (!junctionRes.error ? junctionRes.data : null) ?? []
 
-  // Calcular stats por campaña desde leads directos
+  // Mapa rápido: lead_id → status (para resolver leads de la junction table)
+  const leadStatusMap: Record<string, string> = {}
+  for (const l of leads) leadStatusMap[l.id] = l.status
+
+  // Calcular stats por campaña desde ambas fuentes
   type CampStats = { total: number; contacted: number; replied: number }
   const campStatsMap: Record<string, CampStats> = {}
   const seenInCamp = new Set<string>()
@@ -80,8 +101,17 @@ export default async function DashboardPage() {
     if (['replied','interested','meeting_scheduled','closed'].includes(status)) m.replied++
   }
 
+  // Fuente 1: leads con campaign_id directo
   for (const l of campaignLeadsData as { id: string; campaign_id: string; status: string }[]) {
     if (l.campaign_id) addToCampStats(l.campaign_id, l.id, l.status)
+  }
+
+  // Fuente 2: junction table (many-to-many) — usa leadStatusMap para resolución de status
+  for (const jl of junctionData as { campaign_id: string; lead_id: string }[]) {
+    if (jl.campaign_id && jl.lead_id) {
+      const status = leadStatusMap[jl.lead_id] ?? 'new'
+      addToCampStats(jl.campaign_id, jl.lead_id, status)
+    }
   }
 
   const today = new Date()
@@ -206,12 +236,14 @@ export default async function DashboardPage() {
           </div>
 
           {/* Actividad reciente */}
-          <div className="card">
+          <div className="card flex flex-col">
             <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
               <h3 className="text-sm font-semibold text-gray-900">Actividad reciente</h3>
-              <Clock className="w-4 h-4 text-gray-400" />
+              <Link href="/activity" className="text-xs text-brand-600 hover:text-brand-700 flex items-center gap-1">
+                Ver todos <ArrowUpRight className="w-3 h-3" />
+              </Link>
             </div>
-            <div className="divide-y divide-gray-50">
+            <div className="divide-y divide-gray-50 flex-1">
               {activities.length === 0 && (
                 <div className="py-8 text-center text-sm text-gray-400">Sin actividad registrada aún.</div>
               )}
@@ -236,60 +268,126 @@ export default async function DashboardPage() {
                 )
               })}
             </div>
+            {/* Paginación */}
+            {activityPages > 1 && (
+              <div className="flex items-center justify-between px-5 py-3 border-t border-gray-100">
+                <span className="text-xs text-gray-400">
+                  Página {actPage} de {activityPages} · {activityTotal} eventos
+                </span>
+                <div className="flex items-center gap-1">
+                  <Link
+                    href={`/dashboard?activity_page=${actPage - 1}`}
+                    className={`p-1.5 rounded-lg border border-gray-200 text-gray-500 hover:bg-gray-50 transition-colors ${actPage <= 1 ? 'pointer-events-none opacity-30' : ''}`}
+                    aria-disabled={actPage <= 1}
+                  >
+                    <ChevronLeft className="w-3.5 h-3.5" />
+                  </Link>
+                  <Link
+                    href={`/dashboard?activity_page=${actPage + 1}`}
+                    className={`p-1.5 rounded-lg border border-gray-200 text-gray-500 hover:bg-gray-50 transition-colors ${actPage >= activityPages ? 'pointer-events-none opacity-30' : ''}`}
+                    aria-disabled={actPage >= activityPages}
+                  >
+                    <ChevronRight className="w-3.5 h-3.5" />
+                  </Link>
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
         {/* Campañas activas */}
-        {campaigns.filter(c => c.status === 'active').length > 0 && (
-          <div className="card">
-            <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
-              <h3 className="text-sm font-semibold text-gray-900">Campañas activas</h3>
-              <Link href="/campaigns" className="text-xs text-brand-600 hover:text-brand-700 flex items-center gap-1">
-                Ver todas <ArrowUpRight className="w-3 h-3" />
-              </Link>
+        {(() => {
+          const activeCampaigns = campaigns.filter(c => c.status === 'active')
+          if (activeCampaigns.length === 0) return null
+          const useListView = activeCampaigns.length > 6
+
+          return (
+            <div className="card">
+              <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
+                <h3 className="text-sm font-semibold text-gray-900">
+                  Campañas activas
+                  <span className="ml-2 text-xs font-normal text-gray-400">{activeCampaigns.length}</span>
+                </h3>
+                <Link href="/campaigns" className="text-xs text-brand-600 hover:text-brand-700 flex items-center gap-1">
+                  Ver todas <ArrowUpRight className="w-3 h-3" />
+                </Link>
+              </div>
+
+              {useListView ? (
+                /* ── Vista lista compacta (>6 campañas) ── */
+                <div className="divide-y divide-gray-50">
+                  {/* Cabecera columnas */}
+                  <div className="grid grid-cols-[1fr_60px_72px_72px_80px_32px] gap-x-3 px-5 py-2 bg-gray-50/70">
+                    <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">Campaña</p>
+                    <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide text-center">Leads</p>
+                    <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide text-center">Contact.</p>
+                    <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide text-center">Respues.</p>
+                    <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide text-center">Tasa</p>
+                    <span />
+                  </div>
+                  {activeCampaigns.map((camp) => {
+                    const cs = campStatsMap[camp.id] ?? { total: 0, contacted: 0, replied: 0 }
+                    const contactRate = cs.total > 0 ? Math.round((cs.contacted / cs.total) * 100) : 0
+                    return (
+                      <div key={camp.id} className="grid grid-cols-[1fr_60px_72px_72px_80px_32px] gap-x-3 items-center px-5 py-2.5 hover:bg-gray-50/50 transition-colors">
+                        <p className="text-sm font-medium text-gray-800 truncate">{camp.name}</p>
+                        <p className="text-sm font-semibold text-gray-700 text-center">{cs.total}</p>
+                        <p className="text-sm font-semibold text-blue-600 text-center">{cs.contacted}</p>
+                        <p className="text-sm font-semibold text-green-600 text-center">{cs.replied}</p>
+                        <div className="flex items-center gap-1.5">
+                          <div className="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                            <div className="h-full bg-brand-500 rounded-full" style={{ width: `${contactRate}%` }} />
+                          </div>
+                          <span className="text-xs text-gray-500 w-7 text-right shrink-0">{contactRate}%</span>
+                        </div>
+                        <Link href={`/campaigns/${camp.id}`} className="p-1 text-gray-300 hover:text-brand-500 rounded-lg transition-colors flex justify-center">
+                          <ArrowUpRight className="w-3.5 h-3.5" />
+                        </Link>
+                      </div>
+                    )
+                  })}
+                </div>
+              ) : (
+                /* ── Vista grid cards (≤6 campañas) ── */
+                <div className="p-5 grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {activeCampaigns.map((camp) => {
+                    const cs = campStatsMap[camp.id] ?? { total: 0, contacted: 0, replied: 0 }
+                    const contactRate = cs.total > 0 ? Math.round((cs.contacted / cs.total) * 100) : 0
+                    return (
+                      <Link key={camp.id} href={`/campaigns/${camp.id}`}
+                        className="p-4 border border-gray-200 rounded-xl hover:border-brand-300 hover:bg-brand-50/30 transition-colors">
+                        <p className="text-sm font-semibold text-gray-900 truncate">{camp.name}</p>
+                        <div className="mt-3 grid grid-cols-3 gap-2 text-center">
+                          <div className="bg-gray-50 rounded-lg p-1.5">
+                            <p className="text-sm font-bold text-gray-800">{cs.total}</p>
+                            <p className="text-xs text-gray-400">leads</p>
+                          </div>
+                          <div className="bg-blue-50 rounded-lg p-1.5">
+                            <p className="text-sm font-bold text-blue-700">{cs.contacted}</p>
+                            <p className="text-xs text-blue-400">contactados</p>
+                          </div>
+                          <div className="bg-green-50 rounded-lg p-1.5">
+                            <p className="text-sm font-bold text-green-700">{cs.replied}</p>
+                            <p className="text-xs text-green-400">respuestas</p>
+                          </div>
+                        </div>
+                        <div className="mt-3">
+                          <div className="flex items-center justify-between text-xs text-gray-400 mb-1">
+                            <span>Progreso contactación</span>
+                            <span>{contactRate}%</span>
+                          </div>
+                          <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                            <div className="h-full bg-brand-500 rounded-full transition-all" style={{ width: `${contactRate}%` }} />
+                          </div>
+                        </div>
+                      </Link>
+                    )
+                  })}
+                </div>
+              )}
             </div>
-            <div className="p-5 grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              {campaigns.filter(c => c.status === 'active').map((camp) => {
-                const cs = campStatsMap[camp.id] ?? { total: 0, contacted: 0, replied: 0 }
-                const contactRate = cs.total > 0
-                  ? Math.round((cs.contacted / cs.total) * 100)
-                  : 0
-                return (
-                  <Link key={camp.id} href={`/campaigns/${camp.id}`}
-                    className="p-4 border border-gray-200 rounded-xl hover:border-brand-300 hover:bg-brand-50/30 transition-colors">
-                    <p className="text-sm font-semibold text-gray-900 truncate">{camp.name}</p>
-                    <div className="mt-3 grid grid-cols-3 gap-2 text-center">
-                      <div className="bg-gray-50 rounded-lg p-1.5">
-                        <p className="text-sm font-bold text-gray-800">{cs.total}</p>
-                        <p className="text-xs text-gray-400">leads</p>
-                      </div>
-                      <div className="bg-blue-50 rounded-lg p-1.5">
-                        <p className="text-sm font-bold text-blue-700">{cs.contacted}</p>
-                        <p className="text-xs text-blue-400">contactados</p>
-                      </div>
-                      <div className="bg-green-50 rounded-lg p-1.5">
-                        <p className="text-sm font-bold text-green-700">{cs.replied}</p>
-                        <p className="text-xs text-green-400">respuestas</p>
-                      </div>
-                    </div>
-                    <div className="mt-3">
-                      <div className="flex items-center justify-between text-xs text-gray-400 mb-1">
-                        <span>Progreso contactación</span>
-                        <span>{contactRate}%</span>
-                      </div>
-                      <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
-                        <div
-                          className="h-full bg-brand-500 rounded-full transition-all"
-                          style={{ width: `${contactRate}%` }}
-                        />
-                      </div>
-                    </div>
-                  </Link>
-                )
-              })}
-            </div>
-          </div>
-        )}
+          )
+        })()}
 
         {/* Accesos rápidos si no hay datos */}
         {leads.length === 0 && (

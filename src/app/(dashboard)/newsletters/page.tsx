@@ -4,12 +4,24 @@ import React, { useState, useEffect, useCallback, lazy, Suspense } from 'react'
 import TopBar from '@/components/layout/TopBar'
 import Modal from '@/components/ui/Modal'
 import { toast } from '@/components/ui/Toast'
-import Link from 'next/link'
 import {
-  Plus, Send, Mail, MailOpen, Eye, Trash2, Edit2, Clock, CheckCircle2,
-  Loader2, Users, FileText, Calendar, ChevronRight, AlertTriangle,
-  Sparkles, BookTemplate, Save, X, Play, Pause, UserX, RotateCcw, Info
+  Plus, Send, Mail, MailOpen, Eye, Trash2, Edit2, CheckCircle2,
+  Loader2, AlertTriangle, Save, X, UserX, RotateCcw, Info, Zap, ChevronDown, ChevronUp,
+  CalendarClock, Youtube, Video, List
 } from 'lucide-react'
+
+// Convierte un ISO UTC a formato "YYYY-MM-DDTHH:MM" en hora local (para datetime-local input)
+function utcToLocalInput(iso: string): string {
+  const d = new Date(iso)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+// Convierte el valor de datetime-local (hora local) a ISO UTC para guardar en DB
+function localInputToUtc(local: string): string {
+  return new Date(local).toISOString()
+}
+import { getPresetTemplates, TAG_STYLES, TAG_LABELS, LANG_LABELS, type Lang } from '@/lib/newsletterTemplates'
 
 // Editor HTML (lazy load)
 const RichTextEditor = lazy(() => import('@/components/ui/RichTextEditor').catch(() => ({
@@ -29,6 +41,7 @@ const RichTextEditor = lazy(() => import('@/components/ui/RichTextEditor').catch
 // ============================================================
 
 type NewsletterStatus = 'draft' | 'scheduled' | 'sending' | 'sent' | 'cancelled'
+type ViewMode = 'list' | 'editor' | 'unsubscribes' | 'report'
 
 interface Newsletter {
   id: string
@@ -44,9 +57,11 @@ interface Newsletter {
   total_recipients: number
   total_sent: number
   total_opened: number
-  total_clicked: number
+  total_clicked?: number
   total_bounced: number
   target_type: string
+  target_list_id?: string | null
+  target_list_ids?: string[] | null
   created_at: string
 }
 
@@ -60,6 +75,7 @@ interface Template {
 interface List {
   id: string
   name: string
+  icon?: string
   member_count?: number
 }
 
@@ -78,6 +94,21 @@ interface PreviewCount {
   effective: number
 }
 
+interface RecipientDetail {
+  id: string
+  email: string
+  name?: string
+  status: 'pending' | 'sent' | 'opened' | 'failed' | 'bounced'
+  sent_at?: string
+  opened_at?: string
+  open_count?: number
+  lead_id?: string
+}
+
+interface NewsletterDetail extends Newsletter {
+  newsletter_recipients: RecipientDetail[]
+}
+
 const STATUS_STYLE: Record<NewsletterStatus, { label: string; className: string; icon: string }> = {
   draft:     { label: 'Borrador',    className: 'bg-gray-100 text-gray-600',   icon: '✏️' },
   scheduled: { label: 'Programado',  className: 'bg-amber-100 text-amber-700', icon: '⏰' },
@@ -94,9 +125,7 @@ const DEFAULT_HTML = `<!DOCTYPE html>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 0; padding: 0; background: #f8fafc; }
     .wrapper { max-width: 600px; margin: 0 auto; background: white; }
-    .header { background: #1e293b; color: white; padding: 32px 40px; }
-    .header h1 { margin: 0; font-size: 24px; font-weight: 700; }
-    .header p { margin: 8px 0 0; opacity: 0.7; font-size: 14px; }
+    .header { background: #1e293b; padding: 32px 40px; }
     .content { padding: 40px; }
     .content p { color: #374151; line-height: 1.7; font-size: 15px; margin: 0 0 16px; }
     .cta { display: inline-block; background: #3b82f6; color: white; padding: 14px 28px; border-radius: 8px; text-decoration: none; font-weight: 600; margin: 16px 0; }
@@ -107,8 +136,7 @@ const DEFAULT_HTML = `<!DOCTYPE html>
 <body>
   <div class="wrapper">
     <div class="header">
-      <h1>MyMediaConnect</h1>
-      <p>La plataforma de gestión de creatividades publicitarias</p>
+      <img src="https://media-connector-lead-engine.vercel.app/logo.png" alt="MyMediaConnect" width="160" style="display:block;border:0" />
     </div>
     <div class="content">
       <p>Hola {{nombre}},</p>
@@ -120,7 +148,7 @@ const DEFAULT_HTML = `<!DOCTYPE html>
     </div>
     <div class="footer">
       Has recibido este email porque tienes una relación comercial con nosotros.
-      <a href="#">Cancelar suscripción</a>
+      <a href="{{UNSUBSCRIBE_URL}}">Cancelar suscripción</a>
     </div>
   </div>
 </body>
@@ -132,7 +160,11 @@ export default function NewslettersPage() {
   const [lists, setLists] = useState<List[]>([])
   const [unsubscribes, setUnsubscribes] = useState<Unsubscribe[]>([])
   const [loading, setLoading] = useState(true)
-  const [view, setView] = useState<'list' | 'editor' | 'unsubscribes'>('list')
+  const [view, setView] = useState<ViewMode>('list')
+  const [reportData, setReportData] = useState<NewsletterDetail | null>(null)
+  const [loadingReport, setLoadingReport] = useState(false)
+  const [reportSearch, setReportSearch] = useState('')
+  const [reportFilter, setReportFilter] = useState<string>('all')
   const [previewCount, setPreviewCount] = useState<PreviewCount | null>(null)
   const [loadingPreview, setLoadingPreview] = useState(false)
   const [reactivating, setReactivating] = useState<string | null>(null)
@@ -142,13 +174,13 @@ export default function NewslettersPage() {
   const [fName, setFName] = useState('')
   const [fSubject, setFSubject] = useState('')
   const [fHtml, setFHtml] = useState(DEFAULT_HTML)
-  const [fFromEmail, setFFromEmail] = useState('')
-  const [fFromName, setFFromName] = useState('MyMediaConnect')
-  const [fReplyTo, setFReplyTo] = useState('')
   const [fScheduled, setFScheduled] = useState('')
-  const [fTargetType, setFTargetType] = useState<'all' | 'list'>('all')
-  const [fTargetList, setFTargetList] = useState('')
-  const [fPreviewMode, setFPreviewMode] = useState<'code' | 'preview'>('code')
+  const [fPreviewMode, setFPreviewMode] = useState<'editor' | 'code' | 'preview'>('editor')
+  const [showPresets, setShowPresets] = useState(true)
+  const [presetLang, setPresetLang] = useState<Lang>('es')
+  const [showVideoPanel, setShowVideoPanel] = useState(false)
+  const [videoUrl, setVideoUrl] = useState('')
+  const [fTargetLists, setFTargetLists] = useState<string[]>([])
 
   // Modals
   const [showDeleteModal, setShowDeleteModal] = useState(false)
@@ -156,7 +188,6 @@ export default function NewslettersPage() {
   const [showSendModal, setShowSendModal] = useState(false)
   const [sendId, setSendId] = useState<string | null>(null)
   const [sending, setSending] = useState(false)
-  const [showTemplatesModal, setShowTemplatesModal] = useState(false)
   const [savingTemplate, setSavingTemplate] = useState(false)
   const [newTemplateName, setNewTemplateName] = useState('')
   const [saving, setSaving] = useState(false)
@@ -179,11 +210,11 @@ export default function NewslettersPage() {
     setLoading(false)
   }, [])
 
-  const loadPreview = useCallback(async (targetType: string, targetListId: string) => {
+  const loadPreview = useCallback(async (listIds: string[]) => {
+    if (listIds.length === 0) { setPreviewCount(null); return }
     setLoadingPreview(true)
     setPreviewCount(null)
-    const params = new URLSearchParams({ target_type: targetType })
-    if (targetType === 'list' && targetListId) params.set('target_list_id', targetListId)
+    const params = new URLSearchParams({ list_ids: listIds.join(',') })
     const res = await fetch(`/api/newsletters/recipients-preview?${params}`)
     const json = await res.json()
     setPreviewCount(json.data ?? null)
@@ -204,18 +235,70 @@ export default function NewslettersPage() {
 
   useEffect(() => { load() }, [load])
 
+  // ── YouTube helpers ──────────────────────────────────────────
+  function extractYouTubeId(url: string): string | null {
+    const m = url.match(/(?:youtu\.be\/|youtube\.com\/(?:watch\?(?:.*&)?v=|embed\/|v\/))([a-zA-Z0-9_-]{11})/)
+    return m ? m[1] : null
+  }
+
+  const insertYouTubeBlock = () => {
+    const videoId = extractYouTubeId(videoUrl.trim())
+    if (!videoId) {
+      toast.error('URL inválida', 'Pega un enlace de YouTube válido (youtube.com/watch?v=... o youtu.be/...).')
+      return
+    }
+    const ytUrl = `https://www.youtube.com/watch?v=${videoId}`
+    const block = `
+<!-- BLOQUE VIDEO YOUTUBE -->
+<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:28px 0;">
+  <tr>
+    <td align="center" style="padding:0 20px;">
+      <a href="${ytUrl}" target="_blank" rel="noopener noreferrer" style="display:inline-block;text-decoration:none;border:0;line-height:0;">
+        <img src="https://img.youtube.com/vi/${videoId}/hqdefault.jpg"
+             alt="Ver video en YouTube"
+             width="480"
+             style="max-width:100%;border-radius:10px;display:block;border:0;" />
+      </a>
+      <div style="margin-top:14px;">
+        <a href="${ytUrl}"
+           target="_blank" rel="noopener noreferrer"
+           style="display:inline-block;background:#FF0000;color:#ffffff;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:14px;font-weight:700;padding:11px 28px;border-radius:6px;text-decoration:none;letter-spacing:0.01em;">
+          &#9654;&nbsp;&nbsp;Ver en YouTube
+        </a>
+      </div>
+    </td>
+  </tr>
+</table>
+<!-- FIN BLOQUE VIDEO YOUTUBE -->`
+
+    // Insertar antes del footer si existe, si no antes de </body>, si no al final
+    let updated: string
+    if (fHtml.includes('<div class="footer"')) {
+      updated = fHtml.replace('<div class="footer"', `${block}\n    <div class="footer"`)
+    } else if (fHtml.includes('</body>')) {
+      updated = fHtml.replace('</body>', `${block}\n</body>`)
+    } else {
+      updated = fHtml + block
+    }
+
+    setFHtml(updated)
+    setVideoUrl('')
+    setShowVideoPanel(false)
+    setFPreviewMode('preview')
+    toast.success('Video añadido ✓', 'Bloque de YouTube insertado. Revísalo en la vista previa.')
+  }
+
   const resetForm = () => {
     setEditingId(null)
     setFName('')
     setFSubject('')
     setFHtml(DEFAULT_HTML)
-    setFFromEmail('')
-    setFFromName('MyMediaConnect')
-    setFReplyTo('')
     setFScheduled('')
-    setFTargetType('all')
-    setFTargetList('')
-    setFPreviewMode('code')
+    setFTargetLists([])
+    setFPreviewMode('editor')
+    setShowPresets(true)
+    setShowVideoPanel(false)
+    setVideoUrl('')
   }
 
   const openNew = () => {
@@ -228,12 +311,14 @@ export default function NewslettersPage() {
     setFName(nl.name)
     setFSubject(nl.subject)
     setFHtml(nl.body_html)
-    setFFromEmail(nl.from_email)
-    setFFromName(nl.from_name)
-    setFReplyTo(nl.reply_to ?? '')
-    setFScheduled(nl.scheduled_for ? nl.scheduled_for.slice(0, 16) : '')
-    setFTargetType(nl.target_type === 'list' ? 'list' : 'all')
-    setFTargetList('')
+    setFScheduled(nl.scheduled_for ? utcToLocalInput(nl.scheduled_for) : '')
+    // Recuperar listas seleccionadas: usar target_list_ids si existe, sino target_list_id (legacy)
+    const savedLists = nl.target_list_ids?.length
+      ? nl.target_list_ids
+      : nl.target_list_id ? [nl.target_list_id] : []
+    setFTargetLists(savedLists)
+    setFPreviewMode('editor')
+    setShowPresets(false)
     setView('editor')
   }
 
@@ -241,18 +326,22 @@ export default function NewslettersPage() {
     if (!fName.trim()) { toast.error('Falta el nombre', 'Pon un nombre al newsletter.'); return }
     if (!fSubject.trim()) { toast.error('Falta el asunto', 'Escribe el asunto del email.'); return }
     if (!fHtml.trim()) { toast.error('Falta el contenido', 'Escribe el cuerpo del newsletter.'); return }
+    if (fTargetLists.length === 0) { toast.error('Sin destinatarios', 'Selecciona al menos una lista de destinatarios.'); return }
 
     setSaving(true)
+
+    const scheduledUtc = fScheduled ? localInputToUtc(fScheduled) : null
+
     const body = {
       name: fName,
       subject: fSubject,
       body_html: fHtml,
-      from_email: fFromEmail,
-      from_name: fFromName,
-      reply_to: fReplyTo,
-      scheduled_for: fScheduled || null,
-      target_type: fTargetType,
-      target_list_id: fTargetType === 'list' ? fTargetList : null,
+      from_email: '',
+      from_name: '',
+      reply_to: '',
+      scheduled_for: status === 'draft' ? null : scheduledUtc,
+      target_type: 'list',
+      target_list_ids: fTargetLists,
       ...(status ? { status } : {}),
     }
 
@@ -301,17 +390,50 @@ export default function NewslettersPage() {
     }
   }
 
-  const openSendModal = (id: string, targetType: string, targetListId: string) => {
+  const openSendModal = (id: string, listIds: string[]) => {
     setSendId(id)
     setShowSendModal(true)
-    loadPreview(targetType, targetListId)
+    loadPreview(listIds)
+  }
+
+  const openReport = async (id: string) => {
+    setLoadingReport(true)
+    setReportData(null)
+    setReportSearch('')
+    setReportFilter('all')
+    setView('report')
+    const res = await fetch(`/api/newsletters/${id}`)
+    const json = await res.json()
+    setReportData(json.data ?? null)
+    setLoadingReport(false)
   }
 
   const applyTemplate = (tpl: Template) => {
     setFSubject(tpl.subject)
     setFHtml(tpl.body_html)
-    setShowTemplatesModal(false)
     toast.success('Plantilla aplicada')
+  }
+
+  const handleSchedule = async () => {
+    if (!fScheduled) {
+      toast.error('Sin fecha', 'Selecciona primero la fecha y hora de envío.')
+      return
+    }
+    const selected = new Date(fScheduled)
+    if (selected <= new Date()) {
+      toast.error('Fecha inválida', 'La fecha de programación debe ser futura.')
+      return
+    }
+    await handleSave('scheduled')
+  }
+
+  const applyPreset = (preset: ReturnType<typeof getPresetTemplates>[0]) => {
+    setFSubject(preset.subject)
+    setFHtml(preset.body_html)
+    if (!fName) setFName(preset.name)
+    setShowPresets(false)
+    setFPreviewMode('preview')
+    toast.success('Plantilla aplicada', preset.description)
   }
 
   const saveAsTemplate = async () => {
@@ -349,7 +471,20 @@ export default function NewslettersPage() {
                 <X className="w-3.5 h-3.5" /> Cancelar
               </button>
               <button onClick={() => handleSave('draft')} disabled={saving} className="btn-secondary text-xs py-1.5">
-                <Save className="w-3.5 h-3.5" /> {saving ? 'Guardando…' : 'Guardar borrador'}
+                <Save className="w-3.5 h-3.5" /> {saving ? 'Guardando…' : 'Borrador'}
+              </button>
+              <button
+                onClick={handleSchedule}
+                disabled={saving || !fScheduled}
+                className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg font-medium border transition-colors ${
+                  fScheduled
+                    ? 'bg-amber-500 hover:bg-amber-600 text-white border-amber-500'
+                    : 'bg-white text-gray-400 border-gray-200 cursor-not-allowed opacity-60'
+                }`}
+                title={!fScheduled ? 'Primero selecciona la fecha y hora de envío' : `Programar para el ${new Date(fScheduled).toLocaleString('es-ES', { dateStyle: 'medium', timeStyle: 'short' })}`}
+              >
+                <CalendarClock className="w-3.5 h-3.5" />
+                {saving ? 'Guardando…' : 'Programar'}
               </button>
               <button
                 onClick={() => { setSendId(editingId ?? 'new'); setShowSendModal(true) }}
@@ -366,6 +501,63 @@ export default function NewslettersPage() {
         <div className="flex flex-1 overflow-hidden">
           {/* Panel izquierdo — configuración */}
           <div className="w-72 shrink-0 border-r border-gray-200 overflow-y-auto p-4 space-y-4 bg-gray-50/30">
+
+            {/* ── Plantillas premium ── */}
+            <div className="border border-purple-200 rounded-xl overflow-hidden">
+              <button
+                onClick={() => setShowPresets(v => !v)}
+                className="w-full flex items-center justify-between px-3 py-2.5 bg-gradient-to-r from-purple-50 to-blue-50 hover:from-purple-100 hover:to-blue-100 transition-colors"
+              >
+                <div className="flex items-center gap-2">
+                  <Zap className="w-3.5 h-3.5 text-purple-500" />
+                  <span className="text-xs font-semibold text-purple-700">Plantillas premium</span>
+                </div>
+                {showPresets
+                  ? <ChevronUp className="w-3.5 h-3.5 text-purple-400" />
+                  : <ChevronDown className="w-3.5 h-3.5 text-purple-400" />
+                }
+              </button>
+              {showPresets && (
+                <div className="bg-white">
+                  {/* Selector de idioma */}
+                  <div className="flex items-center gap-1.5 px-2 pt-2 pb-1">
+                    <span className="text-[10px] text-gray-400 font-semibold uppercase tracking-wide mr-1">Idioma:</span>
+                    {(['es', 'en', 'fr'] as Lang[]).map(lang => (
+                      <button
+                        key={lang}
+                        onClick={() => setPresetLang(lang)}
+                        className={`text-xs px-2.5 py-1 rounded-lg font-semibold transition-colors border ${
+                          presetLang === lang
+                            ? 'bg-purple-600 text-white border-purple-600'
+                            : 'bg-white text-gray-600 border-gray-200 hover:border-purple-300 hover:text-purple-600'
+                        }`}
+                      >
+                        {LANG_LABELS[lang]}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="p-2 space-y-1.5">
+                    {getPresetTemplates(presetLang).map(preset => (
+                      <button
+                        key={preset.id}
+                        onClick={() => applyPreset(preset)}
+                        className="w-full text-left rounded-lg border border-gray-100 hover:border-purple-200 hover:bg-purple-50/50 p-2.5 transition-all group"
+                      >
+                        <div className="flex items-center gap-1.5 mb-1">
+                          <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${TAG_STYLES[preset.tag]}`}>
+                            {TAG_LABELS[preset.tag]}
+                          </span>
+                          <span className="text-xs font-semibold text-gray-800 group-hover:text-purple-700 truncate">{preset.name}</span>
+                        </div>
+                        <p className="text-[11px] text-gray-400 leading-tight">{preset.description}</p>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* ── Datos básicos ── */}
             <div>
               <label className="label text-xs">Nombre del newsletter *</label>
               <input className="input text-sm" value={fName} onChange={e => setFName(e.target.value)} placeholder="Newsletter Mayo 2026" />
@@ -374,47 +566,97 @@ export default function NewslettersPage() {
               <label className="label text-xs">Asunto del email *</label>
               <input className="input text-sm" value={fSubject} onChange={e => setFSubject(e.target.value)} placeholder="¿Aprobáis creatividades en bucle?" />
             </div>
-            <div>
-              <label className="label text-xs">De (email)</label>
-              <input className="input text-sm" value={fFromEmail} onChange={e => setFFromEmail(e.target.value)} placeholder="ivan@mymediaconnect.com" />
+
+            {/* ── Remitente — info ── */}
+            <div className="bg-blue-50 border border-blue-100 rounded-lg px-3 py-2.5">
+              <p className="text-xs font-semibold text-blue-700 mb-0.5 flex items-center gap-1.5">
+                <Mail className="w-3 h-3" /> Envío con rotación automática
+              </p>
+              <p className="text-[11px] text-blue-500 leading-snug">
+                Los emails se envían rotando entre las 4 cuentas de Guillaume para maximizar la entregabilidad.
+              </p>
             </div>
+
             <div>
-              <label className="label text-xs">De (nombre)</label>
-              <input className="input text-sm" value={fFromName} onChange={e => setFFromName(e.target.value)} placeholder="Ivan · MyMediaConnect" />
-            </div>
-            <div>
-              <label className="label text-xs">Reply-to</label>
-              <input className="input text-sm" value={fReplyTo} onChange={e => setFReplyTo(e.target.value)} placeholder="ivan@mymediaconnect.com" />
-            </div>
-            <div>
-              <label className="label text-xs">Programar envío (opcional)</label>
-              <input type="datetime-local" className="input text-sm" value={fScheduled} onChange={e => setFScheduled(e.target.value)} />
-              {fScheduled && (
-                <p className="text-xs text-amber-600 mt-1">
-                  ⏰ Se enviará el {new Date(fScheduled).toLocaleString('es-ES', { dateStyle: 'medium', timeStyle: 'short' })}
-                </p>
+              <label className="label text-xs flex items-center gap-1.5">
+                <CalendarClock className="w-3.5 h-3.5 text-amber-500" />
+                Fecha de envío programado
+              </label>
+              <input
+                type="datetime-local"
+                className="input text-sm"
+                value={fScheduled}
+                min={new Date(Date.now() + 60000).toISOString().slice(0, 16)}
+                onChange={e => setFScheduled(e.target.value)}
+              />
+              {fScheduled ? (
+                <div className="mt-1.5 flex items-start gap-1.5 bg-amber-50 border border-amber-100 rounded-lg px-2.5 py-2">
+                  <CalendarClock className="w-3.5 h-3.5 text-amber-500 shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-xs font-semibold text-amber-700">
+                      {new Date(fScheduled).toLocaleString('es-ES', { weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' })}
+                    </p>
+                    <p className="text-[11px] text-amber-600 mt-0.5">Hora local · pulsa "Programar" para confirmar</p>
+                  </div>
+                </div>
+              ) : (
+                <p className="text-xs text-gray-400 mt-1">Deja vacío para enviar manualmente</p>
               )}
             </div>
+            {/* ── Destinatarios — solo listas ── */}
             <div>
-              <label className="label text-xs">Destinatarios</label>
-              <select className="input text-sm" value={fTargetType} onChange={e => setFTargetType(e.target.value as 'all' | 'list')}>
-                <option value="all">Todos los leads con email</option>
-                <option value="list">Lista específica</option>
-              </select>
+              <label className="label text-xs flex items-center gap-1.5">
+                <List className="w-3.5 h-3.5 text-brand-500" />
+                Listas de destinatarios *
+              </label>
+              {lists.length === 0 ? (
+                <div className="text-xs text-gray-400 bg-gray-50 rounded-lg px-3 py-2.5 border border-gray-100">
+                  No tienes listas creadas. Ve a{' '}
+                  <a href="/leads" className="text-brand-600 underline">Leads → sidebar</a> para crear una.
+                </div>
+              ) : (
+                <div className="border border-gray-200 rounded-xl overflow-hidden">
+                  {lists.map(l => {
+                    const checked = fTargetLists.includes(l.id)
+                    return (
+                      <label
+                        key={l.id}
+                        className={`flex items-center gap-2.5 px-3 py-2 cursor-pointer transition-colors border-b border-gray-100 last:border-0 ${
+                          checked ? 'bg-brand-50' : 'hover:bg-gray-50'
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={e => {
+                            const next = e.target.checked
+                              ? [...fTargetLists, l.id]
+                              : fTargetLists.filter(id => id !== l.id)
+                            setFTargetLists(next)
+                          }}
+                          className="accent-brand-600 w-3.5 h-3.5 shrink-0"
+                        />
+                        <span className="text-base leading-none">{l.icon ?? '📋'}</span>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-xs font-medium text-gray-800 truncate">{l.name}</p>
+                          <p className="text-[10px] text-gray-400">{l.member_count ?? 0} leads</p>
+                        </div>
+                      </label>
+                    )
+                  })}
+                </div>
+              )}
+              {fTargetLists.length > 0 && (
+                <p className="text-[11px] text-brand-600 mt-1.5 font-medium">
+                  ✓ {fTargetLists.length} lista{fTargetLists.length !== 1 ? 's' : ''} seleccionada{fTargetLists.length !== 1 ? 's' : ''}
+                </p>
+              )}
+              {fTargetLists.length === 0 && lists.length > 0 && (
+                <p className="text-[11px] text-amber-600 mt-1.5">⚠ Selecciona al menos una lista</p>
+              )}
             </div>
-            {fTargetType === 'list' && (
-              <div>
-                <label className="label text-xs">Seleccionar lista</label>
-                <select className="input text-sm" value={fTargetList} onChange={e => setFTargetList(e.target.value)}>
-                  <option value="">— Elige una lista —</option>
-                  {lists.map(l => (
-                    <option key={l.id} value={l.id}>{l.name} ({l.member_count ?? 0})</option>
-                  ))}
-                </select>
-              </div>
-            )}
 
-            {/* Guardar como plantilla */}
+            {/* ── Guardar como plantilla ── */}
             <div className="pt-2 border-t border-gray-200">
               <p className="text-xs font-medium text-gray-600 mb-2">Guardar como plantilla</p>
               <div className="flex gap-1">
@@ -430,10 +672,10 @@ export default function NewslettersPage() {
               </div>
             </div>
 
-            {/* Plantillas disponibles */}
+            {/* ── Mis plantillas ── */}
             {templates.length > 0 && (
               <div>
-                <p className="text-xs font-medium text-gray-600 mb-2">Cargar plantilla</p>
+                <p className="text-xs font-medium text-gray-600 mb-2">Mis plantillas guardadas</p>
                 <div className="space-y-1">
                   {templates.map(tpl => (
                     <div key={tpl.id} className="flex items-center gap-1">
@@ -454,54 +696,202 @@ export default function NewslettersPage() {
           </div>
 
           {/* Panel derecho — editor */}
-          <div className="flex-1 flex flex-col overflow-hidden">
-            {/* Barra de tabs code/preview */}
-            <div className="flex items-center gap-1 px-4 py-2 border-b border-gray-200 bg-white">
+          <div className="flex-1 flex flex-col overflow-hidden min-h-0">
+            {/* Barra de tabs: Editor / Código / Vista previa / YouTube */}
+            <div className="flex items-center gap-1 px-4 py-2 border-b border-gray-200 bg-white shrink-0 flex-wrap">
+              <button
+                onClick={() => setFPreviewMode('editor')}
+                className={`text-xs px-3 py-1.5 rounded-lg font-medium transition-colors ${
+                  fPreviewMode === 'editor' ? 'bg-brand-100 text-brand-700' : 'text-gray-500 hover:bg-gray-100'
+                }`}
+              >
+                ✏️ Editor
+              </button>
               <button
                 onClick={() => setFPreviewMode('code')}
                 className={`text-xs px-3 py-1.5 rounded-lg font-medium transition-colors ${
-                  fPreviewMode === 'code' ? 'bg-brand-100 text-brand-700' : 'text-gray-500 hover:bg-gray-100'
+                  fPreviewMode === 'code' ? 'bg-amber-100 text-amber-700' : 'text-gray-500 hover:bg-gray-100'
                 }`}
               >
-                &lt;/&gt; HTML
+                &lt;/&gt; Código
               </button>
               <button
                 onClick={() => setFPreviewMode('preview')}
                 className={`text-xs px-3 py-1.5 rounded-lg font-medium transition-colors ${
-                  fPreviewMode === 'preview' ? 'bg-brand-100 text-brand-700' : 'text-gray-500 hover:bg-gray-100'
+                  fPreviewMode === 'preview' ? 'bg-green-100 text-green-700' : 'text-gray-500 hover:bg-gray-100'
                 }`}
               >
                 <Eye className="w-3 h-3 inline mr-1" /> Vista previa
               </button>
-              <span className="text-xs text-gray-400 ml-auto">
+
+              {/* Separador */}
+              <div className="w-px h-4 bg-gray-200 mx-1" />
+
+              {/* Botón insertar video YouTube */}
+              <button
+                onClick={() => setShowVideoPanel(v => !v)}
+                className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg font-medium transition-colors border ${
+                  showVideoPanel
+                    ? 'bg-red-600 text-white border-red-600'
+                    : 'bg-white text-red-600 border-red-200 hover:bg-red-50 hover:border-red-400'
+                }`}
+                title="Insertar video de YouTube como thumbnail clicable (recomendado para email)"
+              >
+                <Youtube className="w-3.5 h-3.5" />
+                <span>Insertar video</span>
+              </button>
+
+              <span className="text-xs text-gray-400 ml-auto hidden sm:block">
                 Usa <code className="bg-gray-100 px-1 rounded">{'{{nombre}}'}</code> para personalizar
               </span>
             </div>
 
-            {fPreviewMode === 'code' ? (
+            {/* Panel insertar video YouTube */}
+            {showVideoPanel && (
+              <div className="shrink-0 border-b border-red-100 bg-red-50/60 px-4 py-3">
+                <div className="flex items-start gap-3">
+                  <div className="w-8 h-8 rounded-lg bg-red-600 flex items-center justify-center shrink-0 mt-0.5">
+                    <Youtube className="w-4 h-4 text-white" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-semibold text-gray-800 mb-0.5">Insertar video de YouTube</p>
+                    <p className="text-[11px] text-gray-500 mb-2 leading-snug">
+                      Se inserta como <strong>thumbnail clicable</strong> — sin iframes, sin riesgo de spam.
+                      Al hacer clic se abre YouTube en el navegador.
+                    </p>
+                    <div className="flex gap-2">
+                      <input
+                        type="url"
+                        value={videoUrl}
+                        onChange={e => setVideoUrl(e.target.value)}
+                        onKeyDown={e => e.key === 'Enter' && insertYouTubeBlock()}
+                        placeholder="https://www.youtube.com/watch?v=... o https://youtu.be/..."
+                        className="input text-xs flex-1 py-1.5"
+                        autoFocus
+                      />
+                      <button
+                        onClick={insertYouTubeBlock}
+                        disabled={!videoUrl.trim()}
+                        className="flex items-center gap-1.5 text-xs px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded-lg font-semibold transition-colors disabled:opacity-40 shrink-0"
+                      >
+                        <Video className="w-3.5 h-3.5" />
+                        Insertar
+                      </button>
+                      <button
+                        onClick={() => { setShowVideoPanel(false); setVideoUrl('') }}
+                        className="text-gray-400 hover:text-gray-600 p-1.5"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+                    <p className="text-[10px] text-gray-400 mt-1.5">
+                      💡 Formatos aceptados: youtube.com/watch?v=ID · youtu.be/ID · youtube.com/embed/ID
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* ── Editor WYSIWYG (TipTap) ── */}
+            {fPreviewMode === 'editor' && (
               <div className="flex-1 overflow-auto p-4">
                 <Suspense fallback={<div className="h-64 flex items-center justify-center text-gray-400 text-sm">Cargando editor...</div>}>
                   <RichTextEditor
                     value={fHtml}
                     onChange={setFHtml}
-                    placeholder="Escribe el HTML de tu newsletter..."
+                    placeholder="Escribe el contenido de tu newsletter..."
                   />
                 </Suspense>
                 <p className="text-xs text-gray-400 mt-2">
-                  También puedes pegar HTML directamente. El editor soporta HTML completo con estilos inline.
+                  Editor visual. Para editar el HTML directamente usa la pestaña <strong>Código</strong>.
                 </p>
               </div>
-            ) : (
-              <div className="flex-1 overflow-auto bg-gray-100 p-4">
-                <div className="max-w-2xl mx-auto bg-white rounded-xl shadow-sm overflow-hidden">
-                  <iframe
-                    srcDoc={fHtml.replace(/\{\{nombre\}\}/gi, 'María García').replace(/\{\{name\}\}/gi, 'Maria')}
-                    className="w-full"
-                    style={{ height: '600px', border: 'none' }}
-                    title="Vista previa newsletter"
-                    sandbox="allow-same-origin"
-                  />
+            )}
+
+            {/* ── Editor de código HTML en bruto ── */}
+            {fPreviewMode === 'code' && (
+              <div className="flex-1 flex flex-col overflow-hidden bg-[#1e1e2e]">
+                <div className="flex items-center justify-between px-4 py-2 border-b border-white/10 shrink-0">
+                  <span className="text-xs text-amber-400 font-mono font-semibold">newsletter.html</span>
+                  <div className="flex items-center gap-3">
+                    <span className="text-xs text-gray-500 font-mono">{fHtml.length.toLocaleString()} chars</span>
+                    <button
+                      onClick={() => {
+                        navigator.clipboard.writeText(fHtml)
+                        toast.success('Copiado', 'HTML copiado al portapapeles.')
+                      }}
+                      className="text-xs text-gray-400 hover:text-white transition-colors px-2 py-1 rounded border border-white/10 hover:border-white/30"
+                    >
+                      Copiar
+                    </button>
+                  </div>
                 </div>
+                <textarea
+                  value={fHtml}
+                  onChange={e => setFHtml(e.target.value)}
+                  spellCheck={false}
+                  className="flex-1 w-full resize-none bg-transparent text-gray-200 font-mono text-xs leading-relaxed p-4 focus:outline-none"
+                  style={{ tabSize: 2 }}
+                  placeholder="<!-- Pega o escribe tu HTML aquí -->"
+                  onKeyDown={e => {
+                    // Tab inserta 2 espacios en lugar de cambiar foco
+                    if (e.key === 'Tab') {
+                      e.preventDefault()
+                      const el = e.currentTarget
+                      const start = el.selectionStart
+                      const end = el.selectionEnd
+                      const newVal = fHtml.substring(0, start) + '  ' + fHtml.substring(end)
+                      setFHtml(newVal)
+                      requestAnimationFrame(() => {
+                        el.selectionStart = el.selectionEnd = start + 2
+                      })
+                    }
+                  }}
+                />
+              </div>
+            )}
+
+            {/* ── Vista previa renderizada ── */}
+            {fPreviewMode === 'preview' && (
+              <div className="flex-1 overflow-auto bg-gray-100">
+                {/* Barra de herramientas de preview */}
+                <div className="flex items-center justify-between px-4 py-2 bg-white border-b border-gray-100 sticky top-0 z-10">
+                  <span className="text-xs text-gray-500">Vista previa · el texto <code className="bg-gray-100 px-1 rounded">{'{{nombre}}'}</code> se sustituye por ejemplo</span>
+                  <button
+                    onClick={() => {
+                      const previewHtml = fHtml
+                        .replace(/\{\{nombre\}\}/gi, 'María García')
+                        .replace(/\{\{name\}\}/gi, 'Maria')
+                        .replace(/\{\{prénom\}\}/gi, 'Marie')
+                      const printWin = window.open('', '_blank', 'width=900,height=700')
+                      if (printWin) {
+                        printWin.document.write(`<!DOCTYPE html><html><head><title>${fSubject || 'Newsletter'}</title><style>@media print{body{margin:0}}</style></head><body>${previewHtml}</body></html>`)
+                        printWin.document.close()
+                        printWin.onload = () => { printWin.focus(); printWin.print() }
+                      }
+                    }}
+                    className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-red-200 text-red-600 hover:bg-red-50 transition-colors font-medium"
+                  >
+                    📄 Exportar PDF
+                  </button>
+                </div>
+                <iframe
+                  key={fHtml}
+                  srcDoc={fHtml.replace(/\{\{nombre\}\}/gi, 'María García').replace(/\{\{name\}\}/gi, 'Maria').replace(/\{\{prénom\}\}/gi, 'Marie')}
+                  className="w-full block"
+                  style={{ minHeight: 'calc(100vh - 220px)', border: 'none' }}
+                  title="Vista previa newsletter"
+                  sandbox="allow-same-origin"
+                  onLoad={(e) => {
+                    try {
+                      const doc = e.currentTarget.contentDocument
+                      if (doc) {
+                        const h = doc.documentElement.scrollHeight
+                        if (h > 0) e.currentTarget.style.height = h + 'px'
+                      }
+                    } catch { /* cross-origin safety */ }
+                  }}
+                />
               </div>
             )}
           </div>
@@ -516,8 +906,8 @@ export default function NewslettersPage() {
             </div>
             <div className="p-3 bg-gray-50 rounded-lg text-xs text-gray-600 space-y-1">
               <div><strong>Asunto:</strong> {fSubject}</div>
-              <div><strong>De:</strong> {fFromName} &lt;{fFromEmail}&gt;</div>
-              <div><strong>Destinatarios:</strong> {fTargetType === 'all' ? 'Todos los leads con email' : `Lista: ${lists.find(l => l.id === fTargetList)?.name ?? '—'}`}</div>
+              <div><strong>De:</strong> Guillaume — rotación de 4 cuentas</div>
+              <div><strong>Listas:</strong> {fTargetLists.length === 0 ? '—' : fTargetLists.map(id => lists.find(l => l.id === id)?.name ?? id).join(', ')}</div>
             </div>
             <div className="flex gap-2 justify-end">
               <button onClick={() => setShowSendModal(false)} className="btn-secondary text-xs">Cancelar</button>
@@ -527,6 +917,212 @@ export default function NewslettersPage() {
             </div>
           </div>
         </Modal>
+      </div>
+    )
+  }
+
+  // ── Vista reporte de newsletter ────────────────────────────
+  if (view === 'report') {
+    const nl = reportData
+    const recipients = nl?.newsletter_recipients ?? []
+
+    // Métricas
+    const totalSent      = nl?.total_sent ?? 0
+    const totalOpened    = nl?.total_opened ?? 0
+    const totalClicked   = nl?.total_clicked ?? 0
+    const totalBounced   = nl?.total_bounced ?? 0
+    const totalFailed    = recipients.filter(r => r.status === 'failed').length
+    const openRate       = totalSent > 0 ? Math.round((totalOpened / totalSent) * 100) : 0
+    const clickRate      = totalSent > 0 ? Math.round((totalClicked / totalSent) * 100) : 0
+    const bounceRate     = totalSent > 0 ? Math.round((totalBounced / totalSent) * 100) : 0
+
+    // Filtro + búsqueda en tabla
+    const filtered = recipients.filter(r => {
+      const matchSearch = !reportSearch ||
+        r.email.toLowerCase().includes(reportSearch.toLowerCase()) ||
+        (r.name ?? '').toLowerCase().includes(reportSearch.toLowerCase())
+      const matchFilter = reportFilter === 'all' || r.status === reportFilter
+      return matchSearch && matchFilter
+    })
+
+    const RECIPIENT_STATUS: Record<string, { label: string; className: string; dot: string }> = {
+      sent:    { label: 'Entregado',  className: 'bg-blue-50 text-blue-600',   dot: 'bg-blue-400' },
+      opened:  { label: 'Abierto',    className: 'bg-green-50 text-green-700', dot: 'bg-green-500' },
+      failed:  { label: 'Fallido',    className: 'bg-red-50 text-red-600',     dot: 'bg-red-400' },
+      bounced: { label: 'Rebotado',   className: 'bg-orange-50 text-orange-600', dot: 'bg-orange-400' },
+      pending: { label: 'Pendiente',  className: 'bg-gray-100 text-gray-500',  dot: 'bg-gray-300' },
+    }
+
+    return (
+      <div className="animate-fade-in">
+        <TopBar
+          title={loadingReport ? 'Cargando reporte…' : (nl?.name ?? 'Reporte newsletter')}
+          subtitle={nl ? `Enviado el ${new Date(nl.sent_at ?? nl.created_at).toLocaleString('es-ES', { dateStyle: 'long', timeStyle: 'short' })}` : ''}
+          actions={
+            <button onClick={() => setView('list')} className="btn-secondary text-xs py-1.5">
+              <X className="w-3.5 h-3.5" /> Volver
+            </button>
+          }
+        />
+
+        {loadingReport ? (
+          <div className="p-10 text-center">
+            <Loader2 className="w-8 h-8 animate-spin text-brand-500 mx-auto mb-3" />
+            <p className="text-sm text-gray-500">Cargando datos del reporte…</p>
+          </div>
+        ) : !nl ? (
+          <div className="p-10 text-center text-sm text-gray-500">No se pudieron cargar los datos.</div>
+        ) : (
+          <div className="p-3 md:p-6 space-y-5">
+
+            {/* Info del envío */}
+            <div className="card px-5 py-3 flex flex-wrap items-center gap-4 text-xs text-gray-500">
+              <div><span className="font-semibold text-gray-700">Asunto:</span> {nl.subject}</div>
+              <div className="w-px h-4 bg-gray-200 hidden sm:block" />
+              <div><span className="font-semibold text-gray-700">Destinatarios:</span> {nl.total_recipients}</div>
+              <div className="w-px h-4 bg-gray-200 hidden sm:block" />
+              <div><span className="font-semibold text-gray-700">Remitente:</span> Guillaume — rotación 4 cuentas</div>
+            </div>
+
+            {/* KPI cards */}
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+              {[
+                { label: 'Enviados',      value: totalSent,    sub: `de ${nl.total_recipients}`,  color: 'bg-blue-50',   text: 'text-blue-600',   icon: Send },
+                { label: 'Tasa apertura', value: `${openRate}%`, sub: `${totalOpened} abiertos`,  color: 'bg-green-50',  text: 'text-green-600',  icon: MailOpen },
+                { label: 'Tasa clicks',   value: `${clickRate}%`, sub: `${totalClicked} clicks`,  color: 'bg-purple-50', text: 'text-purple-600', icon: Eye },
+                { label: 'Rebotes',       value: totalBounced, sub: `${bounceRate}% tasa`,         color: 'bg-orange-50', text: 'text-orange-600', icon: AlertTriangle },
+                { label: 'Fallidos',      value: totalFailed,  sub: 'error al enviar',             color: 'bg-red-50',    text: 'text-red-500',    icon: X },
+              ].map(card => (
+                <div key={card.label} className={`card p-4 flex flex-col gap-1 border-0 ${card.color}`}>
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-medium text-gray-600">{card.label}</span>
+                    <card.icon className={`w-3.5 h-3.5 ${card.text}`} />
+                  </div>
+                  <p className={`text-2xl font-bold ${card.text}`}>{card.value}</p>
+                  <p className="text-[11px] text-gray-400">{card.sub}</p>
+                </div>
+              ))}
+            </div>
+
+            {/* Barras de progreso */}
+            <div className="card p-4 space-y-3">
+              <p className="text-xs font-semibold text-gray-700 mb-1">Distribución de resultados</p>
+              {[
+                { label: 'Abiertos',   count: totalOpened,  total: totalSent, color: 'bg-green-500' },
+                { label: 'Solo entregados (no abiertos)', count: Math.max(0, totalSent - totalOpened - totalBounced - totalFailed), total: totalSent, color: 'bg-blue-400' },
+                { label: 'Rebotes',    count: totalBounced, total: totalSent, color: 'bg-orange-400' },
+                { label: 'Fallidos',   count: totalFailed,  total: totalSent, color: 'bg-red-400' },
+              ].filter(b => b.count > 0).map(bar => (
+                <div key={bar.label} className="flex items-center gap-3">
+                  <span className="text-xs text-gray-500 w-44 shrink-0">{bar.label}</span>
+                  <div className="flex-1 bg-gray-100 rounded-full h-2 overflow-hidden">
+                    <div
+                      className={`h-2 rounded-full ${bar.color} transition-all`}
+                      style={{ width: `${bar.total > 0 ? Math.round((bar.count / bar.total) * 100) : 0}%` }}
+                    />
+                  </div>
+                  <span className="text-xs font-semibold text-gray-700 w-10 text-right">{bar.count}</span>
+                  <span className="text-xs text-gray-400 w-8">{bar.total > 0 ? Math.round((bar.count / bar.total) * 100) : 0}%</span>
+                </div>
+              ))}
+            </div>
+
+            {/* Tabla de destinatarios */}
+            <div className="card overflow-hidden">
+              <div className="px-5 py-3 border-b border-gray-100 flex flex-col sm:flex-row sm:items-center gap-3">
+                <div>
+                  <h3 className="text-sm font-semibold text-gray-900">Destinatarios ({recipients.length})</h3>
+                  <p className="text-xs text-gray-400 mt-0.5">Estado individual de cada envío</p>
+                </div>
+                <div className="flex items-center gap-2 sm:ml-auto flex-wrap">
+                  {/* Filtro por estado */}
+                  <select
+                    value={reportFilter}
+                    onChange={e => setReportFilter(e.target.value)}
+                    className="input text-xs py-1 w-auto"
+                  >
+                    <option value="all">Todos los estados</option>
+                    <option value="opened">Abiertos</option>
+                    <option value="sent">Entregados</option>
+                    <option value="bounced">Rebotados</option>
+                    <option value="failed">Fallidos</option>
+                    <option value="pending">Pendientes</option>
+                  </select>
+                  {/* Búsqueda */}
+                  <input
+                    type="text"
+                    value={reportSearch}
+                    onChange={e => setReportSearch(e.target.value)}
+                    placeholder="Buscar email o nombre…"
+                    className="input text-xs py-1 w-48"
+                  />
+                </div>
+              </div>
+
+              {filtered.length === 0 ? (
+                <div className="py-10 text-center text-sm text-gray-400">
+                  {reportSearch || reportFilter !== 'all' ? 'Sin resultados para ese filtro.' : 'Sin destinatarios registrados.'}
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="bg-gray-50 border-b border-gray-100">
+                        <th className="text-left px-4 py-2.5 font-semibold text-gray-600">Email / Nombre</th>
+                        <th className="text-left px-4 py-2.5 font-semibold text-gray-600">Estado</th>
+                        <th className="text-left px-4 py-2.5 font-semibold text-gray-600 hidden md:table-cell">Aperturas</th>
+                        <th className="text-left px-4 py-2.5 font-semibold text-gray-600 hidden md:table-cell">Último abrir</th>
+                        <th className="text-left px-4 py-2.5 font-semibold text-gray-600 hidden lg:table-cell">Enviado</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-50">
+                      {filtered.map(r => {
+                        const st = RECIPIENT_STATUS[r.status] ?? RECIPIENT_STATUS.pending
+                        return (
+                          <tr key={r.id} className="hover:bg-gray-50/50 transition-colors">
+                            <td className="px-4 py-3">
+                              <p className="font-medium text-gray-800">{r.email}</p>
+                              {r.name && <p className="text-gray-400 mt-0.5">{r.name}</p>}
+                            </td>
+                            <td className="px-4 py-3">
+                              <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-semibold ${st.className}`}>
+                                <span className={`w-1.5 h-1.5 rounded-full ${st.dot} shrink-0`} />
+                                {st.label}
+                              </span>
+                            </td>
+                            <td className="px-4 py-3 hidden md:table-cell">
+                              {(r.open_count ?? 0) > 0
+                                ? <span className="font-semibold text-green-600">{r.open_count}×</span>
+                                : <span className="text-gray-300">—</span>
+                              }
+                            </td>
+                            <td className="px-4 py-3 hidden md:table-cell text-gray-400">
+                              {r.opened_at
+                                ? new Date(r.opened_at).toLocaleString('es-ES', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })
+                                : <span className="text-gray-300">—</span>
+                              }
+                            </td>
+                            <td className="px-4 py-3 hidden lg:table-cell text-gray-400">
+                              {r.sent_at
+                                ? new Date(r.sent_at).toLocaleString('es-ES', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })
+                                : <span className="text-gray-300">—</span>
+                              }
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                  {filtered.length < recipients.length && (
+                    <div className="px-4 py-2.5 text-xs text-gray-400 bg-gray-50 border-t border-gray-100">
+                      Mostrando {filtered.length} de {recipients.length} destinatarios
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </div>
     )
   }
@@ -665,9 +1261,9 @@ export default function NewslettersPage() {
             {/* Stats rápidas */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               {([
-                { label: 'Total newsletters', value: newsletters.length, icon: Mail, color: 'bg-brand-50 text-brand-600' },
-                { label: 'Enviados', value: newsletters.filter(n => n.status === 'sent').length, icon: CheckCircle2, color: 'bg-green-50 text-green-600' },
                 { label: 'Emails enviados', value: newsletters.reduce((acc, n) => acc + (n.total_sent || 0), 0), icon: Send, color: 'bg-blue-50 text-blue-600' },
+                { label: 'Aperturas totales', value: newsletters.reduce((acc, n) => acc + (n.total_opened || 0), 0), icon: MailOpen, color: 'bg-green-50 text-green-600' },
+                { label: 'Clicks totales', value: newsletters.reduce((acc, n) => acc + (n.total_clicked || 0), 0), icon: Eye, color: 'bg-purple-50 text-purple-600' },
                 { label: 'Dados de baja', value: unsubscribes.length, icon: UserX, color: 'bg-red-50 text-red-500', onClick: () => setView('unsubscribes') },
               ] as Array<{ label: string; value: number; icon: React.ElementType; color: string; onClick?: () => void }>).map(card => (
                 <div
@@ -713,19 +1309,64 @@ export default function NewslettersPage() {
                             <>
                               <span className="flex items-center gap-1"><Send className="w-3 h-3" />{nl.total_sent} enviados</span>
                               <span className="flex items-center gap-1"><MailOpen className="w-3 h-3 text-blue-400" />{nl.total_opened} abiertos ({openRate}%)</span>
+                              {(nl.total_clicked ?? 0) > 0 && (
+                                <span className="flex items-center gap-1 text-green-500">
+                                  <Eye className="w-3 h-3" />{nl.total_clicked} clicks
+                                </span>
+                              )}
                               {nl.total_bounced > 0 && (
                                 <span className="flex items-center gap-1 text-red-400"><AlertTriangle className="w-3 h-3" />{nl.total_bounced} rebotes</span>
                               )}
                               {nl.sent_at && <span>{new Date(nl.sent_at).toLocaleDateString('es', { day: '2-digit', month: 'short', year: '2-digit' })}</span>}
                             </>
-                          ) : nl.status === 'scheduled' ? (
-                            <span className="text-amber-500">⏰ Programado: {nl.scheduled_for ? new Date(nl.scheduled_for).toLocaleString('es', { dateStyle: 'medium', timeStyle: 'short' }) : '—'}</span>
-                          ) : (
+                          ) : (nl.status === 'scheduled' || nl.status === 'draft') ? (() => {
+                            const nlListIds = nl.target_list_ids?.length
+                              ? nl.target_list_ids
+                              : nl.target_list_id ? [nl.target_list_id] : []
+                            const nlLists = lists.filter(l => nlListIds.includes(l.id))
+                            const totalLeads = nlLists.reduce((acc, l) => acc + (l.member_count ?? 0), 0)
+                            return (
+                              <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                                {nl.status === 'scheduled' && (
+                                  <span className="text-amber-600 font-medium flex items-center gap-1">
+                                    <CalendarClock className="w-3 h-3" />
+                                    {nl.scheduled_for
+                                      ? new Date(nl.scheduled_for).toLocaleString('es', { dateStyle: 'medium', timeStyle: 'short' })
+                                      : '—'}
+                                  </span>
+                                )}
+                                {nlLists.length > 0 ? (
+                                  <span className="flex items-center gap-1 text-gray-500">
+                                    <List className="w-3 h-3 text-brand-400" />
+                                    {nlLists.map(l => l.name).join(', ')}
+                                  </span>
+                                ) : (
+                                  <span className="text-red-400 text-[11px]">⚠ Sin lista asignada</span>
+                                )}
+                                {totalLeads > 0 && (
+                                  <span className="flex items-center gap-1 text-brand-600 font-medium">
+                                    <Send className="w-3 h-3" />
+                                    ~{totalLeads} envío{totalLeads !== 1 ? 's' : ''}
+                                  </span>
+                                )}
+                              </div>
+                            )
+                          })() : (
                             <span>{new Date(nl.created_at).toLocaleDateString('es', { day: '2-digit', month: 'short', year: '2-digit' })}</span>
                           )}
                         </div>
                       </div>
                       <div className="flex items-center gap-1 shrink-0">
+                        {nl.status === 'sent' && (
+                          <button
+                            onClick={() => openReport(nl.id)}
+                            className="btn-secondary text-xs py-1 px-2 text-brand-600 border-brand-200 hover:bg-brand-50"
+                            title="Ver reporte"
+                          >
+                            <MailOpen className="w-3.5 h-3.5" />
+                            <span className="hidden sm:inline ml-1">Reporte</span>
+                          </button>
+                        )}
                         {canEdit && (
                           <button onClick={() => openEdit(nl)} className="btn-secondary text-xs py-1 px-2" title="Editar">
                             <Edit2 className="w-3.5 h-3.5" />
@@ -733,7 +1374,7 @@ export default function NewslettersPage() {
                         )}
                         {canSend && (
                           <button
-                            onClick={() => openSendModal(nl.id, nl.target_type, '')}
+                            onClick={() => openSendModal(nl.id, nl.target_list_ids ?? (nl.target_list_id ? [nl.target_list_id] : []))}
                             className="btn-primary text-xs py-1 px-2"
                             title="Enviar ahora"
                           >

@@ -88,7 +88,7 @@ export async function POST(request: Request, { params }: Params) {
   const inserts = validIds.map((lid: string) => ({
     campaign_id: id,
     lead_id: lid,
-    added_by: user.id,
+    user_id: user.id,
   }))
 
   const { error } = await admin

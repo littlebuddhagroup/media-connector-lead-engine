@@ -31,7 +31,21 @@ export async function PATCH(request: Request, { params }: Params) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'No autenticado' }, { status: 401 })
 
-  const body = await request.json()
+  const rawBody = await request.json()
+
+  // Sanear campos UUID: convertir strings vacíos a null para evitar error de Postgres
+  const UUID_FIELDS = ['target_list_id', 'campaign_id', 'list_id']
+  const body: Record<string, unknown> = Object.fromEntries(
+    Object.entries(rawBody).map(([k, v]) =>
+      UUID_FIELDS.includes(k) && v === '' ? [k, null] : [k, v]
+    )
+  )
+
+  // Mantener target_list_id sincronizado y forzar target_type='list'
+  if (Array.isArray(body.target_list_ids)) {
+    body.target_list_id = (body.target_list_ids as string[])[0] ?? null
+    body.target_type = 'list'
+  }
 
   // Verificar estado actual
   const { data: current } = await supabase

@@ -47,9 +47,10 @@ export async function POST(_req: Request, { params }: Params) {
     .eq('user_id', user.id)
     .eq('provider', 'resend')
     .eq('is_active', true)
-    .single()
+    .maybeSingle()
 
-  if (!integrations?.api_key) {
+  const resendApiKey = integrations?.api_key ?? process.env.RESEND_API_KEY
+  if (!resendApiKey) {
     return NextResponse.json({ error: 'No hay API key de Resend configurada. Ve a Configuración.' }, { status: 400 })
   }
 
@@ -69,39 +70,38 @@ export async function POST(_req: Request, { params }: Params) {
     return NextResponse.json({ error: 'No hay cuentas de envío configuradas.' }, { status: 400 })
   }
 
-  // 3. Resolver destinatarios
-  let recipientLeads: Array<{ id?: string; email: string; company_name?: string; first_name?: string; last_name?: string }> = []
+  // 3. Resolver destinatarios — SOLO desde listas seleccionadas manualmente
+  type LeadRow = { id?: string; email: string; company_name?: string; first_name?: string; last_name?: string }
+  let recipientLeads: LeadRow[] = []
 
-  if (newsletter.target_type === 'list' && newsletter.target_list_id) {
-    const { data: members } = await admin
-      .from('list_members')
-      .select('lead:leads(id, email, company_name, first_name, last_name)')
-      .eq('list_id', newsletter.target_list_id)
-    recipientLeads = (members ?? [])
-      .map((m: Record<string, unknown>) => m.lead as { id: string; email: string; company_name: string } | null)
-      .filter((l: { id: string; email: string; company_name: string } | null): l is { id: string; email: string; company_name: string } => !!l?.email)
-  } else if (newsletter.target_type === 'leads' && newsletter.target_filters) {
-    // Filtros específicos
-    let query = admin.from('leads').select('id, email, company_name, first_name, last_name').eq('user_id', user.id)
-    const f = newsletter.target_filters as Record<string, unknown>
-    if (f.status) query = query.eq('status', f.status)
-    if (f.priority) query = query.eq('priority', f.priority)
-    if (f.campaign_id) query = query.eq('campaign_id', f.campaign_id)
-    const { data } = await query.not('email', 'is', null)
-    recipientLeads = data ?? []
-  } else {
-    // Todos los leads con email
-    const { data } = await admin
-      .from('leads')
-      .select('id, email, company_name, first_name, last_name')
-      .eq('user_id', user.id)
-      .not('email', 'is', null)
-      .neq('email', '')
-    recipientLeads = data ?? []
+  // Usar target_list_ids (nuevo) con fallback a target_list_id (legacy)
+  const listIds: string[] = Array.isArray(newsletter.target_list_ids) && newsletter.target_list_ids.length > 0
+    ? newsletter.target_list_ids
+    : newsletter.target_list_id ? [newsletter.target_list_id] : []
+
+  if (listIds.length === 0) {
+    return NextResponse.json({ error: 'Este newsletter no tiene ninguna lista de destinatarios asignada. Edítalo y selecciona al menos una lista.' }, { status: 400 })
   }
 
+  const { data: members } = await admin
+    .from('lead_list_members')
+    .select('lead:leads(id, email, company_name, first_name, last_name)')
+    .in('list_id', listIds)
+
+  // Deduplicar por email (un lead puede estar en varias listas seleccionadas)
+  const seenEmails = new Set<string>()
+  recipientLeads = (members ?? [])
+    .map((m: Record<string, unknown>) => m.lead as LeadRow | null)
+    .filter((l: LeadRow | null): l is LeadRow => {
+      if (!l?.email) return false
+      const key = l.email.toLowerCase()
+      if (seenEmails.has(key)) return false
+      seenEmails.add(key)
+      return true
+    })
+
   if (recipientLeads.length === 0) {
-    return NextResponse.json({ error: 'No hay destinatarios con email válido' }, { status: 400 })
+    return NextResponse.json({ error: 'Las listas seleccionadas no tienen leads con email válido' }, { status: 400 })
   }
 
   // ── Filtrar emails dados de baja (lista negra global) ──
@@ -124,7 +124,7 @@ export async function POST(_req: Request, { params }: Params) {
   }).eq('id', id)
 
   // 4. Enviar emails
-  const resend = new Resend(integrations.api_key)
+  const resend = new Resend(resendApiKey)
   let sent = 0, failed = 0, bounced = 0
 
   const APP_URL = process.env.NEXT_PUBLIC_APP_URL ?? 'https://media-connector-lead-engine.vercel.app'
@@ -163,22 +163,52 @@ export async function POST(_req: Request, { params }: Params) {
         const senderName  = recipient.from_name || fixedFromName
 
         // Personalizar cuerpo con nombre del destinatario
-        const personalizedHtml = newsletter.body_html
+        const unsubscribeUrl = `${APP_URL}/api/newsletters/unsubscribe?token=${recipient.id}`
+        let personalizedHtml = newsletter.body_html
           .replace(/\{\{nombre\}\}/gi, recipient.name || 'estimado cliente')
           .replace(/\{\{name\}\}/gi,   recipient.name || 'valued customer')
+          .replace(/\{\{prénom\}\}/gi, recipient.name || 'cher client')
+          // Reemplazar el placeholder de unsubscribe en la plantilla
+          .replace(/\{\{UNSUBSCRIBE_URL\}\}/g, unsubscribeUrl)
+          // Catch-all: cualquier href="#" dentro de texto de baja (legacy/custom HTML)
+          .replace(/href="#"([^>]*>(?:[^<]*(?:baja|unsubscrib|désabonn|cancelar|suscripci)[^<]*)<\/a>)/gi,
+            `href="${unsubscribeUrl}"$1`)
 
-        // Footer legal con enlace de baja (token = recipient.id)
-        const unsubscribeUrl = `${APP_URL}/api/newsletters/unsubscribe?token=${recipient.id}`
-        const footer = `
+        // ── Tracking de clicks: wrapear todos los <a href> excepto unsubscribe ──
+        personalizedHtml = personalizedHtml.replace(
+          /href="(https?:\/\/[^"]+)"/gi,
+          (match: string, url: string) => {
+            if (url.includes('/api/newsletters/unsubscribe')) return match
+            const trackUrl = `${APP_URL}/api/newsletters/track/click?r=${recipient.id}&url=${encodeURIComponent(url)}`
+            return `href="${trackUrl}"`
+          }
+        )
+
+        // ── Pixel de tracking de apertura (1×1 GIF invisible) ──
+        const trackingPixel = `<img src="${APP_URL}/api/newsletters/track/open?r=${recipient.id}" width="1" height="1" style="display:none;border:0;outline:none;text-decoration:none" alt="" />`
+
+        // Añadir pixel solo si el HTML no lo tiene ya; no añadir footer duplicado
+        // (las plantillas ya incluyen el footer con el enlace de baja correctamente reemplazado)
+        const hasUnsubLink = personalizedHtml.includes('/api/newsletters/unsubscribe')
+        const detectedLang = /vous avez|désabonn|Bonjour|désabonner/i.test(personalizedHtml) ? 'fr'
+          : /you received|unsubscrib|Hi |Hello /i.test(personalizedHtml) ? 'en' : 'es'
+        const unsubLabel = detectedLang === 'fr' ? 'Se désabonner'
+          : detectedLang === 'en' ? 'Unsubscribe' : 'Darse de baja'
+        const unsubNote = detectedLang === 'fr'
+          ? 'Vous avez reçu cet email car nous avons une relation commerciale.'
+          : detectedLang === 'en'
+          ? 'You received this email because we have a business relationship.'
+          : 'Has recibido este email porque tenemos una relación comercial.'
+        const extraFooter = hasUnsubLink ? '' : `
           <div style="margin-top:32px;padding-top:20px;border-top:1px solid #e5e7eb;text-align:center;font-size:12px;color:#9ca3af;font-family:sans-serif;line-height:1.6;">
-            Has recibido este email porque estás en la lista de contactos de MyMediaConnect.<br>
-            <a href="${unsubscribeUrl}" style="color:#6b7280;text-decoration:underline;">Darse de baja</a>
-            &nbsp;·&nbsp; MyMediaConnect
+            ${unsubNote}<br>
+            <a href="${unsubscribeUrl}" style="color:#6b7280;text-decoration:underline;">${unsubLabel}</a>
+            &nbsp;·&nbsp; mymediaconnect.com
           </div>`
 
-        const fullHtml = personalizedHtml.includes('</body>')
-          ? personalizedHtml.replace('</body>', `${footer}</body>`)
-          : personalizedHtml + footer
+        let fullHtml = personalizedHtml.includes('</body>')
+          ? personalizedHtml.replace('</body>', `${extraFooter}${trackingPixel}</body>`)
+          : personalizedHtml + extraFooter + trackingPixel
 
         const { data: emailData, error: emailErr } = await resend.emails.send({
           from: `${senderName} <${senderEmail}>`,

@@ -84,7 +84,7 @@ export async function POST(request: Request, { params }: Params) {
     const { error } = await admin
       .from('campaign_leads')
       .upsert(
-        { campaign_id, lead_id: id, user_id: user.id, added_by: user.id },
+        { campaign_id, lead_id: id, user_id: user.id },
         { onConflict: 'campaign_id,lead_id', ignoreDuplicates: true }
       )
     if (!error) usedJunction = true

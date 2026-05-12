@@ -113,7 +113,7 @@ function fmt(d?: string | null) {
 }
 function fmtDate(d?: string | null) {
   if (!d) return '—'
-  return new Date(d).toLocaleDateString('es', { day: '2-digit', month: 'short', year: '2-digit' })
+  return new Date(d).toLocaleString('es', { day: '2-digit', month: 'short', year: '2-digit', hour: '2-digit', minute: '2-digit' })
 }
 
 function KpiCard({
@@ -370,6 +370,186 @@ function exportToExcel(params: {
   XLSX.writeFile(wb, `analytics-emails-${date}.xlsx`)
 }
 
+type SortDir = 'asc' | 'desc'
+
+function SortIcon({ active, dir }: { active: boolean; dir: SortDir }) {
+  if (!active) return <ChevronDown className="w-3 h-3 opacity-30 inline ml-0.5" />
+  return dir === 'asc'
+    ? <ChevronUp className="w-3 h-3 text-brand-600 inline ml-0.5" />
+    : <ChevronDown className="w-3 h-3 text-brand-600 inline ml-0.5" />
+}
+
+function useSortableTable<T>(rows: T[], defaultCol: keyof T, defaultDir: SortDir = 'desc') {
+  const [sort, setSort] = useState<{ col: keyof T; dir: SortDir }>({ col: defaultCol, dir: defaultDir })
+  const toggle = (col: keyof T) => setSort(s => s.col === col ? { col, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { col, dir: 'desc' })
+  const sorted = [...rows].sort((a, b) => {
+    const va = a[sort.col] ?? 0
+    const vb = b[sort.col] ?? 0
+    if (va < vb) return sort.dir === 'asc' ? -1 : 1
+    if (va > vb) return sort.dir === 'asc' ? 1 : -1
+    return 0
+  })
+  return { sort, toggle, sorted }
+}
+
+function exportToPDF(params: {
+  summary: Summary
+  byAccount: AccountRow[]
+  byCampaign: CampaignRow[]
+  daily: DailyRow[]
+  days: number
+}) {
+  const { summary, byAccount, byCampaign, days } = params
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
+<title>Informe Analíticas — MyMediaConnect</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background:#fff; color:#1a1a1a; padding:32px; }
+  .header { display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:32px; padding-bottom:20px; border-bottom:3px solid #6c47ff; }
+  .logo { font-size:20px; font-weight:800; color:#6c47ff; letter-spacing:-0.5px; }
+  .period { font-size:12px; color:#888; margin-top:4px; }
+  .meta { text-align:right; font-size:12px; color:#999; }
+  h2 { font-size:14px; font-weight:700; color:#374151; margin:24px 0 12px; padding-bottom:6px; border-bottom:1px solid #e5e7eb; display:flex; align-items:center; gap:8px; }
+  .kpis { display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin-bottom:24px; }
+  .kpi { background:#f8f7ff; border:1px solid #e8e4ff; border-radius:12px; padding:16px; }
+  .kpi-val { font-size:28px; font-weight:800; color:#6c47ff; line-height:1; }
+  .kpi-label { font-size:11px; color:#6b7280; margin-top:4px; }
+  .kpi-sub { font-size:11px; color:#9ca3af; margin-top:2px; }
+  .rates { display:grid; grid-template-columns:repeat(2,1fr); gap:12px; margin-bottom:24px; }
+  .rate-card { background:#f9fafb; border:1px solid #e5e7eb; border-radius:10px; padding:14px; }
+  .rate-row { display:flex; align-items:center; gap:10px; margin-bottom:8px; }
+  .rate-label { font-size:11px; color:#6b7280; width:90px; flex-shrink:0; }
+  .rate-bar-wrap { flex:1; height:6px; background:#e5e7eb; border-radius:999px; overflow:hidden; }
+  .rate-bar { height:100%; border-radius:999px; }
+  .rate-val { font-size:11px; font-weight:700; color:#374151; width:36px; text-align:right; }
+  table { width:100%; border-collapse:collapse; font-size:11px; margin-bottom:24px; }
+  th { background:#6c47ff; color:#fff; padding:9px 10px; text-align:left; font-weight:600; }
+  th:not(:first-child) { text-align:right; }
+  tr:nth-child(even) { background:#f8f7ff; }
+  td { padding:8px 10px; border-bottom:1px solid #ede9ff; }
+  td:not(:first-child) { text-align:right; }
+  .badge { display:inline-block; padding:2px 7px; border-radius:99px; font-size:10px; font-weight:700; }
+  .badge-green { background:#dcfce7; color:#166534; }
+  .badge-amber { background:#fef3c7; color:#92400e; }
+  .badge-gray  { background:#f3f4f6; color:#6b7280; }
+  .daily-grid { display:grid; grid-template-columns:repeat(7,1fr); gap:4px; }
+  .day-bar { text-align:center; }
+  .day-bar-inner { width:100%; background:#6c47ff; border-radius:3px; min-height:2px; }
+  .day-label { font-size:8px; color:#9ca3af; margin-top:2px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .footer { margin-top:28px; text-align:center; font-size:11px; color:#bbb; padding-top:14px; border-top:1px solid #e5e7eb; }
+  @media print { body { padding:16px; } h2 { break-before:auto; } }
+</style>
+</head><body>
+
+<div class="header">
+  <div>
+    <div class="logo">📊 MyMediaConnect · Informe Analítico</div>
+    <div class="period">Período: últimos ${days} días · ${new Date().toLocaleDateString('es-ES', { day:'numeric', month:'long', year:'numeric' })}</div>
+  </div>
+  <div class="meta">Generado: ${new Date().toLocaleString('es-ES')}</div>
+</div>
+
+<h2>📈 Resumen global de emails</h2>
+<div class="kpis">
+  ${[
+    { label: 'Enviados', val: summary.total_sent, sub: `${summary.delivery_rate}% entregados` },
+    { label: 'Abiertos', val: summary.total_opened, sub: `${summary.open_rate}% apertura` },
+    { label: 'Clicados', val: summary.total_clicked, sub: `${summary.click_rate}% clics` },
+    { label: 'Respondidos', val: summary.total_replied, sub: `${summary.reply_rate}% respuesta` },
+    { label: 'Entregados', val: summary.total_delivered, sub: '' },
+    { label: 'Rebotados', val: summary.total_bounced, sub: `${summary.bounce_rate}% rebote` },
+    { label: 'Fallidos', val: summary.total_failed, sub: '' },
+    { label: 'Spam', val: summary.total_spam, sub: '' },
+  ].map(k => `<div class="kpi"><div class="kpi-val">${k.val}</div><div class="kpi-label">${k.label}</div>${k.sub ? `<div class="kpi-sub">${k.sub}</div>` : ''}</div>`).join('')}
+</div>
+
+<h2>📊 Tasas de rendimiento</h2>
+<div class="rates">
+  <div class="rate-card">
+    ${[
+      { label: 'Entregados', val: summary.delivery_rate, color: '#6c47ff' },
+      { label: 'Abiertos', val: summary.open_rate, color: '#3b82f6' },
+      { label: 'Clics', val: summary.click_rate, color: '#8b5cf6' },
+      { label: 'Respondidos', val: summary.reply_rate, color: '#22c55e' },
+      { label: 'Rebotados', val: summary.bounce_rate, color: '#ef4444' },
+    ].map(r => `<div class="rate-row">
+      <span class="rate-label">${r.label}</span>
+      <div class="rate-bar-wrap"><div class="rate-bar" style="width:${Math.min(r.val,100)}%;background:${r.color}"></div></div>
+      <span class="rate-val">${r.val}%</span>
+    </div>`).join('')}
+  </div>
+  <div class="rate-card">
+    <p style="font-size:12px;font-weight:600;color:#374151;margin-bottom:10px">Totales destacados</p>
+    ${[
+      { label: '📧 Emails enviados', val: summary.total_sent },
+      { label: '✅ Entregados', val: summary.total_delivered },
+      { label: '👁 Abiertos', val: summary.total_opened },
+      { label: '💬 Respondidos', val: summary.total_replied },
+      { label: '⚠️ Rebotados', val: summary.total_bounced },
+    ].map(r => `<div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:6px;border-bottom:1px solid #f3f4f6;padding-bottom:4px">
+      <span style="color:#6b7280">${r.label}</span>
+      <strong>${r.val}</strong>
+    </div>`).join('')}
+  </div>
+</div>
+
+${byCampaign.length > 0 ? `
+<h2>🎯 Rendimiento por campaña</h2>
+<table>
+<thead><tr>
+  <th>Campaña</th><th>Enviados</th><th>Abiertos</th><th>% Apert.</th>
+  <th>Clicados</th><th>Respondidos</th><th>% Resp.</th><th>Rebotes</th>
+</tr></thead>
+<tbody>
+${byCampaign.map(r => {
+  const openClass = r.open_rate >= 30 ? 'badge-green' : r.open_rate >= 15 ? 'badge-amber' : 'badge-gray'
+  const replyClass = r.reply_rate >= 10 ? 'badge-green' : r.reply_rate >= 5 ? 'badge-amber' : 'badge-gray'
+  return `<tr>
+    <td><strong>${r.name}</strong></td>
+    <td>${r.sent}</td>
+    <td>${r.opened}</td>
+    <td><span class="badge ${openClass}">${r.open_rate}%</span></td>
+    <td>${r.clicked}</td>
+    <td>${r.replied}</td>
+    <td><span class="badge ${replyClass}">${r.reply_rate}%</span></td>
+    <td>${r.bounced > 0 ? `<span style="color:#ef4444;font-weight:700">${r.bounced}</span>` : '—'}</td>
+  </tr>`
+}).join('')}
+</tbody>
+</table>` : ''}
+
+${byAccount.length > 0 ? `
+<h2>👤 Rendimiento por cuenta de envío</h2>
+<table>
+<thead><tr>
+  <th>Cuenta</th><th>Enviados</th><th>Abiertos</th><th>% Apert.</th>
+  <th>Clicados</th><th>Respondidos</th><th>% Resp.</th><th>Rebotes</th>
+</tr></thead>
+<tbody>
+${byAccount.map(r => {
+  const openClass = r.open_rate >= 30 ? 'badge-green' : r.open_rate >= 15 ? 'badge-amber' : 'badge-gray'
+  const replyClass = r.reply_rate >= 10 ? 'badge-green' : r.reply_rate >= 5 ? 'badge-amber' : 'badge-gray'
+  return `<tr>
+    <td style="font-size:10px;font-family:monospace">${r.account}</td>
+    <td>${r.sent}</td>
+    <td>${r.opened}</td>
+    <td><span class="badge ${openClass}">${r.open_rate}%</span></td>
+    <td>${r.clicked}</td>
+    <td>${r.replied}</td>
+    <td><span class="badge ${replyClass}">${r.reply_rate}%</span></td>
+    <td>${r.bounced > 0 ? `<span style="color:#ef4444;font-weight:700">${r.bounced}</span>` : '—'}</td>
+  </tr>`
+}).join('')}
+</tbody>
+</table>` : ''}
+
+<div class="footer">MyMediaConnect · Informe generado automáticamente · ${new Date().toLocaleString('es-ES')}</div>
+</body></html>`
+
+  const w = window.open('', '_blank')
+  if (w) { w.document.write(html); w.document.close(); setTimeout(() => w.print(), 600) }
+}
+
 export default function AnalyticsPage() {
   const [days, setDays] = useState(30)
   const [summary, setSummary] = useState<Summary | null>(null)
@@ -380,6 +560,9 @@ export default function AnalyticsPage() {
   const [drillDown, setDrillDown] = useState<DrillDown | null>(null)
   const [loading, setLoading] = useState(true)
   const [activePanel, setActivePanel] = useState<'bounced' | 'opened' | 'clicked' | 'replied' | 'failed' | 'spam' | null>(null)
+
+  const { sort: campSort, toggle: toggleCampSort, sorted: sortedCampaigns } = useSortableTable<CampaignRow>(byCampaign, 'sent')
+  const { sort: accSort, toggle: toggleAccSort, sorted: sortedAccounts } = useSortableTable<AccountRow>(byAccount, 'sent')
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -402,9 +585,14 @@ export default function AnalyticsPage() {
     setActivePanel(prev => prev === panel ? null : panel)
   }
 
-  const handleExport = () => {
+  const handleExportExcel = () => {
     if (!summary || !drillDown) return
     exportToExcel({ summary, byAccount, byCampaign, daily, recentEmails, drillDown, days })
+  }
+
+  const handleExportPDF = () => {
+    if (!summary) return
+    exportToPDF({ summary, byAccount, byCampaign, daily, days })
   }
 
   return (
@@ -429,10 +617,16 @@ export default function AnalyticsPage() {
               {loading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
             </button>
             {summary && (
-              <button onClick={handleExport} className="btn-secondary text-xs py-1.5 flex items-center gap-1.5">
-                <Download className="w-3.5 h-3.5" />
-                Exportar Excel
-              </button>
+              <>
+                <button onClick={handleExportExcel} className="btn-secondary text-xs py-1.5 flex items-center gap-1.5">
+                  <Download className="w-3.5 h-3.5" />
+                  Excel
+                </button>
+                <button onClick={handleExportPDF} className="btn-primary text-xs py-1.5 flex items-center gap-1.5">
+                  <Download className="w-3.5 h-3.5" />
+                  PDF Ejecutivo
+                </button>
+              </>
             )}
           </div>
         }
@@ -604,24 +798,34 @@ export default function AnalyticsPage() {
                 <div className="px-5 py-4 border-b border-gray-100 flex items-center gap-2">
                   <User className="w-4 h-4 text-brand-600" />
                   <h3 className="text-sm font-semibold text-gray-900">Rendimiento por cuenta de envío</h3>
+                  <span className="text-xs text-gray-400 ml-1">· clic en columna para ordenar</span>
                 </div>
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
                     <thead className="bg-gray-50">
                       <tr>
-                        <th className="text-left px-5 py-3 text-xs font-medium text-gray-500">Cuenta</th>
-                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500">Enviados</th>
-                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500">Abiertos</th>
-                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500">% Apertura</th>
-                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500">Clics</th>
-                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500">% Clics</th>
-                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500">Respondidos</th>
-                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500">% Respuesta</th>
-                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500">Rebotes</th>
+                        {([
+                          { col: 'account', label: 'Cuenta', left: true },
+                          { col: 'sent', label: 'Enviados' },
+                          { col: 'opened', label: 'Abiertos' },
+                          { col: 'open_rate', label: '% Apertura' },
+                          { col: 'clicked', label: 'Clics' },
+                          { col: 'click_rate', label: '% Clics' },
+                          { col: 'replied', label: 'Respondidos' },
+                          { col: 'reply_rate', label: '% Respuesta' },
+                          { col: 'bounced', label: 'Rebotes' },
+                        ] as { col: keyof AccountRow; label: string; left?: boolean }[]).map(({ col, label, left }) => (
+                          <th key={col}
+                            onClick={() => toggleAccSort(col)}
+                            className={`${left ? 'text-left px-5' : 'text-right px-4'} py-3 text-xs font-medium text-gray-500 cursor-pointer hover:text-brand-700 select-none whitespace-nowrap`}
+                          >
+                            {label}<SortIcon active={accSort.col === col} dir={accSort.dir} />
+                          </th>
+                        ))}
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-50">
-                      {byAccount.map(row => (
+                      {sortedAccounts.map(row => (
                         <tr key={row.account} className="hover:bg-gray-50">
                           <td className="px-5 py-3 font-mono text-xs text-gray-700">{row.account}</td>
                           <td className="px-4 py-3 text-right text-gray-700">{row.sent}</td>
@@ -669,23 +873,33 @@ export default function AnalyticsPage() {
                 <div className="px-5 py-4 border-b border-gray-100 flex items-center gap-2">
                   <TrendingUp className="w-4 h-4 text-brand-600" />
                   <h3 className="text-sm font-semibold text-gray-900">Rendimiento por campaña</h3>
+                  <span className="text-xs text-gray-400 ml-1">· clic en columna para ordenar</span>
                 </div>
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
                     <thead className="bg-gray-50">
                       <tr>
-                        <th className="text-left px-5 py-3 text-xs font-medium text-gray-500">Campaña</th>
-                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500">Enviados</th>
-                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500">Abiertos</th>
-                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500">% Apertura</th>
-                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500">Clics</th>
-                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500">Respondidos</th>
-                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500">% Respuesta</th>
-                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500">Rebotes</th>
+                        {([
+                          { col: 'name', label: 'Campaña', left: true },
+                          { col: 'sent', label: 'Enviados' },
+                          { col: 'opened', label: 'Abiertos' },
+                          { col: 'open_rate', label: '% Apertura' },
+                          { col: 'clicked', label: 'Clics' },
+                          { col: 'replied', label: 'Respondidos' },
+                          { col: 'reply_rate', label: '% Respuesta' },
+                          { col: 'bounced', label: 'Rebotes' },
+                        ] as { col: keyof CampaignRow; label: string; left?: boolean }[]).map(({ col, label, left }) => (
+                          <th key={col}
+                            onClick={() => toggleCampSort(col)}
+                            className={`${left ? 'text-left px-5' : 'text-right px-4'} py-3 text-xs font-medium text-gray-500 cursor-pointer hover:text-brand-700 select-none whitespace-nowrap`}
+                          >
+                            {label}<SortIcon active={campSort.col === col} dir={campSort.dir} />
+                          </th>
+                        ))}
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-50">
-                      {byCampaign.map((row, i) => (
+                      {sortedCampaigns.map((row, i) => (
                         <tr key={i} className="hover:bg-gray-50">
                           <td className="px-5 py-3 font-medium text-gray-900">{row.name}</td>
                           <td className="px-4 py-3 text-right text-gray-700">{row.sent}</td>

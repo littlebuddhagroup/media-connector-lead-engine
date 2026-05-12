@@ -13,32 +13,28 @@ export async function GET(request: Request) {
   if (!user) return NextResponse.json({ error: 'No autenticado' }, { status: 401 })
 
   const { searchParams } = new URL(request.url)
-  const targetType   = searchParams.get('target_type') ?? 'all'
-  const targetListId = searchParams.get('target_list_id') ?? ''
+  // Soporte para múltiples list IDs: ?list_ids=id1,id2,id3
+  const listIdsParam = searchParams.get('list_ids') ?? ''
+  const listIds = listIdsParam ? listIdsParam.split(',').filter(Boolean) : []
 
   const admin = createAdminClient()
 
-  // Resolver leads candidatos
+  // Resolver leads candidatos — solo desde listas seleccionadas
   let candidateEmails: string[] = []
 
-  if (targetType === 'list' && targetListId) {
+  if (listIds.length > 0) {
     const { data: members } = await admin
-      .from('list_members')
+      .from('lead_list_members')
       .select('lead:leads(email)')
-      .eq('list_id', targetListId)
-    const mapped: (string | null)[] = (members ?? []).map((m: Record<string, unknown>) => {
-      const lead = m.lead as { email?: string } | null
-      return lead?.email ?? null
-    })
-    candidateEmails = mapped.filter((e): e is string => typeof e === 'string' && e.trim() !== '')
-  } else {
-    const { data: leads } = await admin
-      .from('leads')
-      .select('email')
-      .eq('user_id', user.id)
-      .not('email', 'is', null)
-      .neq('email', '')
-    candidateEmails = (leads ?? []).map((l: { email: string }) => l.email)
+      .in('list_id', listIds)
+    const seen = new Set<string>()
+    for (const m of members ?? []) {
+      const email = (m.lead as { email?: string } | null)?.email
+      if (email && !seen.has(email.toLowerCase())) {
+        seen.add(email.toLowerCase())
+        candidateEmails.push(email)
+      }
+    }
   }
 
   const totalCandidates = candidateEmails.length
