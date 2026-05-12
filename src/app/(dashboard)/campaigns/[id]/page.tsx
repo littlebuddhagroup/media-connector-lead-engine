@@ -145,6 +145,7 @@ export default function CampaignDetailPage() {
     last_email_at: string | null; last_opened_at: string | null; last_replied_at: string | null
     has_active_sequence: boolean; sequence_completed: boolean
     interaction_level: 'replied' | 'clicked' | 'opened' | 'sent' | 'none'
+    last_clicked_url: string | null
   }
   const [analyticsData, setAnalyticsData] = useState<AnalyticsRow[]>([])
   const [analyticsLoading, setAnalyticsLoading] = useState(false)
@@ -737,7 +738,7 @@ export default function CampaignDetailPage() {
     }
 
     // Hoja 1: Resumen — interacción por persona (el más importante)
-    const interactionHeaders = ['Interacción', 'Empresa', 'Contacto', 'Email', 'Departamento', 'Sector', 'País', 'Estado lead', 'Score', 'Enviados', 'Abiertos', 'Clicados', 'Respondidos', 'Rebotados', '% Apertura', '% Respuesta', 'Últ. apertura', 'Últ. respuesta', 'Secuencia']
+    const interactionHeaders = ['Interacción', 'Empresa', 'Contacto', 'Email', 'Departamento', 'Sector', 'País', 'Estado lead', 'Score', 'Enviados', 'Abiertos', 'Clicados', 'URL clicada', 'Respondidos', 'Rebotados', '% Apertura', '% Respuesta', 'Últ. apertura', 'Últ. respuesta', 'Secuencia']
     const interactionRows = sortedAnalytics.map(r => [
       interactionLabel(r.interaction_level),
       r.company_name,
@@ -751,6 +752,7 @@ export default function CampaignDetailPage() {
       r.sent,
       r.opened,
       r.clicked,
+      r.last_clicked_url ?? '',
       r.replied,
       r.bounced,
       `${r.open_rate}%`,
@@ -760,7 +762,7 @@ export default function CampaignDetailPage() {
       r.has_active_sequence ? 'Activa' : r.sequence_completed ? 'Completada' : '—',
     ])
     const wsInteraction = XLSX.utils.aoa_to_sheet([interactionHeaders, ...interactionRows])
-    wsInteraction['!cols'] = [{ wch: 18 }, { wch: 26 }, { wch: 20 }, { wch: 30 }, { wch: 18 }, { wch: 18 }, { wch: 12 }, { wch: 14 }, { wch: 8 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 12 }, { wch: 10 }, { wch: 12 }, { wch: 12 }, { wch: 18 }, { wch: 18 }, { wch: 14 }]
+    wsInteraction['!cols'] = [{ wch: 18 }, { wch: 26 }, { wch: 20 }, { wch: 30 }, { wch: 18 }, { wch: 18 }, { wch: 12 }, { wch: 14 }, { wch: 8 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 50 }, { wch: 12 }, { wch: 10 }, { wch: 12 }, { wch: 12 }, { wch: 18 }, { wch: 18 }, { wch: 14 }]
     XLSX.utils.book_append_sheet(wb, wsInteraction, 'Interacción por persona')
 
     // Hoja 2: Solo los que respondieron
@@ -1627,6 +1629,7 @@ ${noActivity.map(r => personRow(r, '#fff')).join('')}
                                 { col: 'sent', label: 'Env.' },
                                 { col: 'opened', label: 'Abert.' },
                                 { col: 'clicked', label: 'Clics' },
+                                { col: 'last_clicked_url', label: 'URL clicada' },
                                 { col: 'replied', label: 'Resp.' },
                                 { col: 'bounced', label: 'Rebote' },
                                 { col: 'open_rate', label: '% Ap.' },
@@ -1681,6 +1684,24 @@ ${noActivity.map(r => personRow(r, '#fff')).join('')}
                                     {row.clicked > 0
                                       ? <span className="bg-violet-100 text-violet-700 px-1.5 py-0.5 rounded-full font-bold">{row.clicked}</span>
                                       : <span className="text-gray-200">0</span>}
+                                  </td>
+                                  <td className="px-3 py-2.5 max-w-[200px]">
+                                    {row.last_clicked_url ? (
+                                      <a
+                                        href={row.last_clicked_url}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        title={row.last_clicked_url}
+                                        className="flex items-center gap-1 text-xs text-violet-600 hover:text-violet-800 hover:underline"
+                                      >
+                                        <span className="truncate max-w-[170px]">
+                                          {(() => { try { const u = new URL(row.last_clicked_url); return u.hostname.replace(/^www\./, '') + u.pathname } catch { return row.last_clicked_url } })()}
+                                        </span>
+                                        <svg className="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
+                                      </a>
+                                    ) : (
+                                      <span className="text-gray-200 text-xs">—</span>
+                                    )}
                                   </td>
                                   <td className="px-3 py-2.5 text-center">
                                     {row.replied > 0

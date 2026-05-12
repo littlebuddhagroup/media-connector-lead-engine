@@ -6,6 +6,7 @@ type Params = { params: Promise<{ id: string }> }
 type EmailRow = {
   lead_id: string; status: string; opened_at: string | null; clicked_at: string | null
   created_at: string; subject: string | null; from_email: string | null
+  last_clicked_url: string | null
 }
 type SeqRow = { lead_id: string; status: string; created_at: string }
 
@@ -60,11 +61,11 @@ export async function GET(_req: Request, { params }: Params) {
   // Primero intentamos con campaign_id, si hay pocos resultados ampliamos
   const [emailsWithCamp, emailsAllLeads, sequences] = await Promise.all([
     admin.from('emails')
-      .select('lead_id, status, opened_at, clicked_at, created_at, subject, from_email')
+      .select('lead_id, status, opened_at, clicked_at, created_at, subject, from_email, last_clicked_url')
       .eq('campaign_id', id)
       .in('lead_id', leadIds),
     admin.from('emails')
-      .select('lead_id, status, opened_at, clicked_at, created_at, subject, from_email')
+      .select('lead_id, status, opened_at, clicked_at, created_at, subject, from_email, last_clicked_url')
       .in('lead_id', leadIds)
       .order('created_at', { ascending: false }),
     admin.from('sequences')
@@ -124,6 +125,12 @@ export async function GET(_req: Request, { params }: Params) {
     const hasActiveSeq = leadSeqs.some((s: SeqRow) => s?.status === 'active')
     const seqCompleted = leadSeqs.some((s: SeqRow) => s?.status === 'completed')
 
+    // Última URL clicada (del email más reciente con click)
+    const lastClickedUrl = clickedEmails
+      .filter((e: EmailRow) => e.last_clicked_url)
+      .sort((a: EmailRow, b: EmailRow) => new Date(b.clicked_at ?? b.created_at).getTime() - new Date(a.clicked_at ?? a.created_at).getTime())[0]
+      ?.last_clicked_url ?? null
+
     // Nivel de interacción para ordenar/destacar
     const interactionLevel = replied > 0 ? 'replied' : clicked > 0 ? 'clicked' : opened > 0 ? 'opened' : sent > 0 ? 'sent' : 'none'
 
@@ -155,6 +162,8 @@ export async function GET(_req: Request, { params }: Params) {
       sequence_completed: seqCompleted,
       // Nivel de interacción
       interaction_level: interactionLevel,
+      // URL clicada
+      last_clicked_url: lastClickedUrl,
     }
   })
 
