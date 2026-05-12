@@ -139,10 +139,12 @@ export default function CampaignDetailPage() {
   // ─── Analytics tab ────────────────────────────────────────────
   interface AnalyticsRow {
     lead_id: string; company_name: string; email: string; contact_name: string | null
-    status: string; score: number; sector: string; country: string
+    department: string; status: string; score: number; sector: string; country: string
     sent: number; opened: number; clicked: number; replied: number; bounced: number
     open_rate: number; click_rate: number; reply_rate: number
-    last_email_at: string | null; has_active_sequence: boolean; sequence_completed: boolean
+    last_email_at: string | null; last_opened_at: string | null; last_replied_at: string | null
+    has_active_sequence: boolean; sequence_completed: boolean
+    interaction_level: 'replied' | 'clicked' | 'opened' | 'sent' | 'none'
   }
   const [analyticsData, setAnalyticsData] = useState<AnalyticsRow[]>([])
   const [analyticsLoading, setAnalyticsLoading] = useState(false)
@@ -724,99 +726,167 @@ export default function CampaignDetailPage() {
   // Export Excel (analytics)
   const exportAnalyticsExcel = async () => {
     const XLSX = await import('xlsx')
-    const rows = sortedAnalytics.map(r => ({
-      'Empresa': r.company_name,
-      'Contacto': r.contact_name ?? '',
-      'Email': r.email,
-      'Estado': r.status,
-      'Score': r.score,
-      'Sector': r.sector,
-      'País': r.country,
-      'Enviados': r.sent,
-      'Abiertos': r.opened,
-      'Clicados': r.clicked,
-      'Respondidos': r.replied,
-      'Rebotados': r.bounced,
-      'Tasa apertura %': r.open_rate,
-      'Tasa clic %': r.click_rate,
-      'Tasa respuesta %': r.reply_rate,
-      'Secuencia activa': r.has_active_sequence ? 'Sí' : 'No',
-      'Secuencia completada': r.sequence_completed ? 'Sí' : 'No',
-      'Último email': r.last_email_at ? new Date(r.last_email_at).toLocaleDateString('es-ES') : '',
-    }))
-    const ws = XLSX.utils.json_to_sheet(rows)
     const wb = XLSX.utils.book_new()
-    XLSX.utils.book_append_sheet(wb, ws, 'Analíticas')
+
+    const interactionLabel = (level: string) => {
+      if (level === 'replied') return '🟢 Respondió'
+      if (level === 'clicked') return '🔵 Clicó'
+      if (level === 'opened') return '👁 Abrió'
+      if (level === 'sent') return '📧 Enviado'
+      return '— Sin actividad'
+    }
+
+    // Hoja 1: Resumen — interacción por persona (el más importante)
+    const interactionHeaders = ['Interacción', 'Empresa', 'Contacto', 'Email', 'Departamento', 'Sector', 'País', 'Estado lead', 'Score', 'Enviados', 'Abiertos', 'Clicados', 'Respondidos', 'Rebotados', '% Apertura', '% Respuesta', 'Últ. apertura', 'Últ. respuesta', 'Secuencia']
+    const interactionRows = sortedAnalytics.map(r => [
+      interactionLabel(r.interaction_level),
+      r.company_name,
+      r.contact_name ?? '',
+      r.email,
+      r.department ?? '',
+      r.sector,
+      r.country,
+      r.status,
+      r.score,
+      r.sent,
+      r.opened,
+      r.clicked,
+      r.replied,
+      r.bounced,
+      `${r.open_rate}%`,
+      `${r.reply_rate}%`,
+      r.last_opened_at ? new Date(r.last_opened_at).toLocaleString('es-ES') : '',
+      r.last_replied_at ? new Date(r.last_replied_at).toLocaleString('es-ES') : '',
+      r.has_active_sequence ? 'Activa' : r.sequence_completed ? 'Completada' : '—',
+    ])
+    const wsInteraction = XLSX.utils.aoa_to_sheet([interactionHeaders, ...interactionRows])
+    wsInteraction['!cols'] = [{ wch: 18 }, { wch: 26 }, { wch: 20 }, { wch: 30 }, { wch: 18 }, { wch: 18 }, { wch: 12 }, { wch: 14 }, { wch: 8 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 12 }, { wch: 10 }, { wch: 12 }, { wch: 12 }, { wch: 18 }, { wch: 18 }, { wch: 14 }]
+    XLSX.utils.book_append_sheet(wb, wsInteraction, 'Interacción por persona')
+
+    // Hoja 2: Solo los que respondieron
+    const replied = sortedAnalytics.filter(r => r.replied > 0)
+    if (replied.length > 0) {
+      const repliedHeaders = ['Empresa', 'Contacto', 'Email', 'Departamento', 'Respondidos', 'Abiertos', 'Clicados', 'Fecha respuesta']
+      const repliedRows = replied.map(r => [r.company_name, r.contact_name ?? '', r.email, r.department ?? '', r.replied, r.opened, r.clicked, r.last_replied_at ? new Date(r.last_replied_at).toLocaleString('es-ES') : ''])
+      const wsReplied = XLSX.utils.aoa_to_sheet([repliedHeaders, ...repliedRows])
+      wsReplied['!cols'] = [{ wch: 26 }, { wch: 20 }, { wch: 30 }, { wch: 18 }, { wch: 12 }, { wch: 10 }, { wch: 10 }, { wch: 20 }]
+      XLSX.utils.book_append_sheet(wb, wsReplied, 'Respondieron')
+    }
+
+    // Hoja 3: Los que abrieron (sin responder)
+    const opened = sortedAnalytics.filter(r => r.opened > 0 && r.replied === 0)
+    if (opened.length > 0) {
+      const openedHeaders = ['Empresa', 'Contacto', 'Email', 'Departamento', 'Abiertos', 'Clicados', 'Última apertura']
+      const openedRows = opened.map(r => [r.company_name, r.contact_name ?? '', r.email, r.department ?? '', r.opened, r.clicked, r.last_opened_at ? new Date(r.last_opened_at).toLocaleString('es-ES') : ''])
+      const wsOpened = XLSX.utils.aoa_to_sheet([openedHeaders, ...openedRows])
+      wsOpened['!cols'] = [{ wch: 26 }, { wch: 20 }, { wch: 30 }, { wch: 18 }, { wch: 10 }, { wch: 10 }, { wch: 20 }]
+      XLSX.utils.book_append_sheet(wb, wsOpened, 'Abrieron sin responder')
+    }
+
+    // Hoja 4: Sin actividad
+    const noActivity = sortedAnalytics.filter(r => r.sent > 0 && r.opened === 0)
+    if (noActivity.length > 0) {
+      const noActHeaders = ['Empresa', 'Contacto', 'Email', 'Departamento', 'Enviados', 'Estado lead', 'Rebotados']
+      const noActRows = noActivity.map(r => [r.company_name, r.contact_name ?? '', r.email, r.department ?? '', r.sent, r.status, r.bounced])
+      const wsNoAct = XLSX.utils.aoa_to_sheet([noActHeaders, ...noActRows])
+      wsNoAct['!cols'] = [{ wch: 26 }, { wch: 20 }, { wch: 30 }, { wch: 18 }, { wch: 10 }, { wch: 14 }, { wch: 10 }]
+      XLSX.utils.book_append_sheet(wb, wsNoAct, 'Sin actividad')
+    }
+
     XLSX.writeFile(wb, `analiticas-${campaign?.name ?? id}.xlsx`)
   }
 
   // Export PDF (analytics)
   const exportAnalyticsPDF = () => {
     const rows = sortedAnalytics
+    const replied = rows.filter(r => r.replied > 0)
+    const clicked = rows.filter(r => r.clicked > 0 && r.replied === 0)
+    const opened = rows.filter(r => r.opened > 0 && r.replied === 0 && r.clicked === 0)
+    const noActivity = rows.filter(r => r.sent > 0 && r.opened === 0)
+    const totalSent = rows.reduce((s,r)=>s+r.sent,0)
+    const totalOpened = rows.reduce((s,r)=>s+r.opened,0)
+    const totalClicked = rows.reduce((s,r)=>s+r.clicked,0)
+    const totalReplied = rows.reduce((s,r)=>s+r.replied,0)
+    const totalBounced = rows.reduce((s,r)=>s+r.bounced,0)
+
+    const personRow = (r: typeof rows[0], highlight: string) => `<tr style="background:${highlight}">
+  <td><strong style="font-size:12px">${r.company_name}</strong>${r.contact_name ? `<br><span style="color:#6b7280;font-size:10px">${r.contact_name}</span>` : ''}${r.department ? `<br><span style="color:#9ca3af;font-size:9px">${r.department}</span>` : ''}</td>
+  <td style="font-size:10px;font-family:monospace">${r.email}</td>
+  <td style="font-size:10px">${r.sector || '—'}</td>
+  <td style="font-size:10px">${r.country || '—'}</td>
+  <td style="text-align:center;font-weight:700">${r.sent}</td>
+  <td style="text-align:center;font-weight:700;color:#0369a1">${r.opened}</td>
+  <td style="text-align:center;font-weight:700;color:#7c3aed">${r.clicked}</td>
+  <td style="text-align:center;font-weight:700;color:#15803d">${r.replied}</td>
+  <td style="text-align:center;color:#dc2626">${r.bounced > 0 ? r.bounced : '—'}</td>
+  <td style="text-align:center;font-size:10px;color:#6b7280">${r.last_opened_at ? new Date(r.last_opened_at).toLocaleDateString('es-ES',{day:'2-digit',month:'short'}) : r.last_replied_at ? new Date(r.last_replied_at).toLocaleDateString('es-ES',{day:'2-digit',month:'short'}) : '—'}</td>
+</tr>`
+
+    const tableHeader = `<tr><th>Empresa / Contacto</th><th>Email</th><th>Sector</th><th>País</th><th style="text-align:center">Env.</th><th style="text-align:center">Abert.</th><th style="text-align:center">Clics</th><th style="text-align:center">Resp.</th><th style="text-align:center">Rebote</th><th style="text-align:center">Última act.</th></tr>`
+
     const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
 <title>Analíticas — ${campaign?.name ?? ''}</title>
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background:#fff; color:#1a1a1a; padding:32px; }
-  .header { display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:28px; padding-bottom:20px; border-bottom:2px solid #6c47ff; }
-  .title { font-size:22px; font-weight:700; color:#6c47ff; }
-  .subtitle { font-size:13px; color:#666; margin-top:4px; }
-  .meta { text-align:right; font-size:12px; color:#999; }
-  .kpis { display:grid; grid-template-columns:repeat(5,1fr); gap:12px; margin-bottom:28px; }
-  .kpi { background:#f8f7ff; border:1px solid #e8e4ff; border-radius:10px; padding:14px; text-align:center; }
-  .kpi-val { font-size:22px; font-weight:800; color:#6c47ff; }
-  .kpi-label { font-size:11px; color:#888; margin-top:2px; }
-  table { width:100%; border-collapse:collapse; font-size:11px; }
-  th { background:#6c47ff; color:#fff; padding:8px 6px; text-align:left; font-weight:600; }
-  tr:nth-child(even) { background:#f8f7ff; }
-  td { padding:7px 6px; border-bottom:1px solid #ede9ff; }
-  .badge { display:inline-block; padding:2px 6px; border-radius:99px; font-size:10px; font-weight:600; }
-  .badge-opened { background:#dbeafe; color:#1d4ed8; }
-  .badge-replied { background:#dcfce7; color:#166534; }
-  .badge-clicked { background:#ede9fe; color:#6d28d9; }
-  .badge-none { background:#f3f4f6; color:#6b7280; }
-  .footer { margin-top:20px; text-align:center; font-size:11px; color:#bbb; }
-  @media print { body { padding:16px; } }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background:#fff; color:#1a1a1a; padding:28px; font-size:12px; }
+  .header { display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:24px; padding-bottom:16px; border-bottom:3px solid #6c47ff; }
+  .title { font-size:20px; font-weight:800; color:#6c47ff; }
+  .subtitle { font-size:12px; color:#666; margin-top:3px; }
+  .meta { text-align:right; font-size:11px; color:#999; }
+  .kpis { display:grid; grid-template-columns:repeat(5,1fr); gap:10px; margin-bottom:20px; }
+  .kpi { border-radius:10px; padding:12px; text-align:center; }
+  .kpi-val { font-size:24px; font-weight:800; line-height:1; }
+  .kpi-label { font-size:10px; color:#6b7280; margin-top:3px; }
+  h2 { font-size:13px; font-weight:700; color:#374151; margin:20px 0 10px; padding:6px 10px; border-radius:6px; display:flex; align-items:center; gap:6px; }
+  table { width:100%; border-collapse:collapse; font-size:11px; margin-bottom:6px; }
+  th { background:#6c47ff; color:#fff; padding:7px 8px; text-align:left; font-weight:600; font-size:10px; }
+  td { padding:6px 8px; border-bottom:1px solid #e5e7eb; vertical-align:top; }
+  .section-empty { color:#9ca3af; font-size:11px; font-style:italic; padding:8px; }
+  .footer { margin-top:20px; text-align:center; font-size:10px; color:#bbb; border-top:1px solid #e5e7eb; padding-top:12px; }
+  @media print { body { padding:14px; } h2 { break-before:auto; } }
 </style></head><body>
+
 <div class="header">
   <div>
-    <div class="title">📊 Analíticas de Campaña</div>
-    <div class="subtitle">${campaign?.name ?? ''} · ${rows.length} leads analizados</div>
+    <div class="title">📊 Informe de Campaña — ${campaign?.name ?? ''}</div>
+    <div class="subtitle">${rows.length} leads · ${new Date().toLocaleDateString('es-ES', { day:'numeric', month:'long', year:'numeric' })}</div>
   </div>
-  <div class="meta">MyMediaConnect<br>${new Date().toLocaleDateString('es-ES', { day:'numeric', month:'long', year:'numeric' })}</div>
+  <div class="meta">MyMediaConnect<br>Generado: ${new Date().toLocaleTimeString('es-ES',{hour:'2-digit',minute:'2-digit'})}</div>
 </div>
+
 <div class="kpis">
-  ${[
-    { label: 'Leads', val: rows.length },
-    { label: 'Emails enviados', val: rows.reduce((s,r)=>s+r.sent,0) },
-    { label: 'Abiertos', val: rows.reduce((s,r)=>s+r.opened,0) },
-    { label: 'Clicados', val: rows.reduce((s,r)=>s+r.clicked,0) },
-    { label: 'Respondidos', val: rows.reduce((s,r)=>s+r.replied,0) },
-  ].map(k => `<div class="kpi"><div class="kpi-val">${k.val}</div><div class="kpi-label">${k.label}</div></div>`).join('')}
+  <div class="kpi" style="background:#f0fdf4;border:1px solid #bbf7d0"><div class="kpi-val" style="color:#15803d">${totalReplied}</div><div class="kpi-label">Respondieron</div></div>
+  <div class="kpi" style="background:#ede9fe;border:1px solid #c4b5fd"><div class="kpi-val" style="color:#7c3aed">${totalClicked}</div><div class="kpi-label">Clicaron</div></div>
+  <div class="kpi" style="background:#eff6ff;border:1px solid #bfdbfe"><div class="kpi-val" style="color:#1d4ed8">${totalOpened}</div><div class="kpi-label">Abrieron</div></div>
+  <div class="kpi" style="background:#f8f7ff;border:1px solid #e8e4ff"><div class="kpi-val" style="color:#6c47ff">${totalSent}</div><div class="kpi-label">Enviados</div></div>
+  <div class="kpi" style="background:#fef2f2;border:1px solid #fecaca"><div class="kpi-val" style="color:#dc2626">${totalBounced}</div><div class="kpi-label">Rebotados</div></div>
 </div>
-<table>
-<thead><tr>
-  <th>Empresa</th><th>Email</th><th>Estado</th><th>Score</th>
-  <th>Enviados</th><th>Abiertos</th><th>Clicados</th><th>Respondidos</th>
-  <th>Apertura%</th><th>Respuesta%</th><th>Secuencia</th>
-</tr></thead>
-<tbody>
-${rows.map(r => `<tr>
-  <td><strong>${r.company_name}</strong>${r.contact_name ? `<br><small style="color:#888">${r.contact_name}</small>` : ''}</td>
-  <td style="font-size:10px">${r.email}</td>
-  <td>${r.status}</td>
-  <td>${r.score}</td>
-  <td>${r.sent}</td>
-  <td>${r.opened > 0 ? `<span class="badge badge-opened">${r.opened}</span>` : '0'}</td>
-  <td>${r.clicked > 0 ? `<span class="badge badge-clicked">${r.clicked}</span>` : '0'}</td>
-  <td>${r.replied > 0 ? `<span class="badge badge-replied">${r.replied}</span>` : '0'}</td>
-  <td>${r.open_rate}%</td>
-  <td>${r.reply_rate}%</td>
-  <td>${r.has_active_sequence ? '🟢 Activa' : r.sequence_completed ? '✅ Completada' : '—'}</td>
-</tr>`).join('')}
-</tbody>
-</table>
-<div class="footer">Generado con MyMediaConnect · ${new Date().toLocaleString('es-ES')}</div>
+
+${replied.length > 0 ? `
+<h2 style="background:#f0fdf4;color:#166534">✅ Respondieron (${replied.length} personas)</h2>
+<table><thead>${tableHeader}</thead><tbody>
+${replied.map(r => personRow(r, '#f0fdf4')).join('')}
+</tbody></table>` : ''}
+
+${clicked.length > 0 ? `
+<h2 style="background:#ede9fe;color:#6d28d9">🔵 Clicaron sin responder (${clicked.length} personas)</h2>
+<table><thead>${tableHeader}</thead><tbody>
+${clicked.map(r => personRow(r, '#faf5ff')).join('')}
+</tbody></table>` : ''}
+
+${opened.length > 0 ? `
+<h2 style="background:#eff6ff;color:#1e40af">👁 Abrieron sin clicar (${opened.length} personas)</h2>
+<table><thead>${tableHeader}</thead><tbody>
+${opened.map(r => personRow(r, '#f8faff')).join('')}
+</tbody></table>` : ''}
+
+${noActivity.length > 0 ? `
+<h2 style="background:#f9fafb;color:#6b7280">📭 Sin actividad — enviados pero no abiertos (${noActivity.length} personas)</h2>
+<table><thead>${tableHeader}</thead><tbody>
+${noActivity.map(r => personRow(r, '#fff')).join('')}
+</tbody></table>` : ''}
+
+<div class="footer">MyMediaConnect · ${campaign?.name ?? ''} · ${new Date().toLocaleString('es-ES')}</div>
 </body></html>`
     const w = window.open('', '_blank')
     if (w) { w.document.write(html); w.document.close(); setTimeout(() => w.print(), 600) }
@@ -1551,16 +1621,17 @@ ${rows.map(r => `<tr>
                           <thead>
                             <tr className="bg-gray-50 border-b border-gray-100">
                               {([
-                                { col: 'company_name', label: 'Empresa' },
+                                { col: 'interaction_level', label: 'Interacción' },
+                                { col: 'company_name', label: 'Empresa / Contacto' },
                                 { col: 'email', label: 'Email' },
-                                { col: 'status', label: 'Estado' },
-                                { col: 'score', label: 'Score' },
-                                { col: 'sent', label: 'Enviados' },
-                                { col: 'opened', label: 'Abiertos' },
-                                { col: 'clicked', label: 'Clicados' },
-                                { col: 'replied', label: 'Respondidos' },
-                                { col: 'open_rate', label: 'Apertura %' },
-                                { col: 'reply_rate', label: 'Respuesta %' },
+                                { col: 'sent', label: 'Env.' },
+                                { col: 'opened', label: 'Abert.' },
+                                { col: 'clicked', label: 'Clics' },
+                                { col: 'replied', label: 'Resp.' },
+                                { col: 'bounced', label: 'Rebote' },
+                                { col: 'open_rate', label: '% Ap.' },
+                                { col: 'reply_rate', label: '% Resp.' },
+                                { col: 'last_email_at', label: 'Última act.' },
                                 { col: 'has_active_sequence', label: 'Secuencia' },
                               ] as { col: typeof analyticsSort.col; label: string }[]).map(({ col, label }) => (
                                 <th
@@ -1579,65 +1650,80 @@ ${rows.map(r => `<tr>
                             </tr>
                           </thead>
                           <tbody>
-                            {sortedAnalytics.map((row, i) => (
-                              <tr key={row.lead_id} className={`border-b border-gray-50 hover:bg-gray-50/60 transition-colors ${i % 2 === 0 ? '' : 'bg-gray-50/30'}`}>
-                                <td className="px-3 py-2.5">
-                                  <p className="font-medium text-gray-900 truncate max-w-[140px]">{row.company_name}</p>
-                                  {row.contact_name && <p className="text-gray-400 text-xs">{row.contact_name}</p>}
-                                </td>
-                                <td className="px-3 py-2.5 text-gray-500 truncate max-w-[140px]">{row.email}</td>
-                                <td className="px-3 py-2.5">
-                                  <span className={`badge text-xs ${statusColor(row.status)}`}>{statusLabel(row.status)}</span>
-                                </td>
-                                <td className="px-3 py-2.5">
-                                  <span className={`badge text-xs ${scoreToBg(row.score)}`}>{row.score}</span>
-                                </td>
-                                <td className="px-3 py-2.5 text-gray-700 font-medium">{row.sent}</td>
-                                <td className="px-3 py-2.5">
-                                  {row.opened > 0
-                                    ? <span className="bg-sky-100 text-sky-700 px-1.5 py-0.5 rounded-full font-semibold">{row.opened}</span>
-                                    : <span className="text-gray-300">0</span>}
-                                </td>
-                                <td className="px-3 py-2.5">
-                                  {row.clicked > 0
-                                    ? <span className="bg-violet-100 text-violet-700 px-1.5 py-0.5 rounded-full font-semibold">{row.clicked}</span>
-                                    : <span className="text-gray-300">0</span>}
-                                </td>
-                                <td className="px-3 py-2.5">
-                                  {row.replied > 0
-                                    ? <span className="bg-green-100 text-green-700 px-1.5 py-0.5 rounded-full font-semibold">{row.replied}</span>
-                                    : <span className="text-gray-300">0</span>}
-                                </td>
-                                <td className="px-3 py-2.5">
-                                  <div className="flex items-center gap-1.5">
-                                    <div className="w-10 h-1.5 bg-gray-100 rounded-full overflow-hidden">
-                                      <div className="h-full bg-sky-400 rounded-full" style={{ width: `${row.open_rate}%` }} />
-                                    </div>
-                                    <span className="text-gray-600">{row.open_rate}%</span>
-                                  </div>
-                                </td>
-                                <td className="px-3 py-2.5">
-                                  <div className="flex items-center gap-1.5">
-                                    <div className="w-10 h-1.5 bg-gray-100 rounded-full overflow-hidden">
-                                      <div className="h-full bg-green-400 rounded-full" style={{ width: `${row.reply_rate}%` }} />
-                                    </div>
-                                    <span className="text-gray-600">{row.reply_rate}%</span>
-                                  </div>
-                                </td>
-                                <td className="px-3 py-2.5">
-                                  {row.has_active_sequence
-                                    ? <span className="text-green-600 font-medium">🟢 Activa</span>
-                                    : row.sequence_completed
-                                    ? <span className="text-blue-600 font-medium">✅ Completada</span>
-                                    : <span className="text-gray-300">—</span>}
-                                </td>
-                              </tr>
-                            ))}
+                            {sortedAnalytics.map((row) => {
+                              const rowBg =
+                                row.interaction_level === 'replied' ? 'bg-green-50/60 hover:bg-green-50' :
+                                row.interaction_level === 'clicked' ? 'bg-violet-50/40 hover:bg-violet-50' :
+                                row.interaction_level === 'opened'  ? 'bg-sky-50/30 hover:bg-sky-50' :
+                                'hover:bg-gray-50/60'
+                              const interactionBadge =
+                                row.interaction_level === 'replied' ? <span className="bg-green-100 text-green-700 px-2 py-0.5 rounded-full font-semibold">✅ Respondió</span> :
+                                row.interaction_level === 'clicked' ? <span className="bg-violet-100 text-violet-700 px-2 py-0.5 rounded-full font-semibold">🔵 Clicó</span> :
+                                row.interaction_level === 'opened'  ? <span className="bg-sky-100 text-sky-700 px-2 py-0.5 rounded-full font-semibold">👁 Abrió</span> :
+                                row.interaction_level === 'sent'    ? <span className="bg-gray-100 text-gray-500 px-2 py-0.5 rounded-full">📧 Enviado</span> :
+                                <span className="text-gray-300">—</span>
+                              return (
+                                <tr key={row.lead_id} className={`border-b border-gray-100 transition-colors ${rowBg}`}>
+                                  <td className="px-3 py-2.5">{interactionBadge}</td>
+                                  <td className="px-3 py-2.5">
+                                    <p className="font-semibold text-gray-900 truncate max-w-[160px]">{row.company_name}</p>
+                                    {row.contact_name && <p className="text-gray-500 truncate max-w-[160px]">{row.contact_name}</p>}
+                                    {row.department && <p className="text-gray-400 truncate max-w-[160px]">{row.department}</p>}
+                                  </td>
+                                  <td className="px-3 py-2.5 text-gray-500 truncate max-w-[140px]">{row.email}</td>
+                                  <td className="px-3 py-2.5 text-center text-gray-700 font-medium">{row.sent}</td>
+                                  <td className="px-3 py-2.5 text-center">
+                                    {row.opened > 0
+                                      ? <span className="bg-sky-100 text-sky-700 px-1.5 py-0.5 rounded-full font-bold">{row.opened}</span>
+                                      : <span className="text-gray-200">0</span>}
+                                  </td>
+                                  <td className="px-3 py-2.5 text-center">
+                                    {row.clicked > 0
+                                      ? <span className="bg-violet-100 text-violet-700 px-1.5 py-0.5 rounded-full font-bold">{row.clicked}</span>
+                                      : <span className="text-gray-200">0</span>}
+                                  </td>
+                                  <td className="px-3 py-2.5 text-center">
+                                    {row.replied > 0
+                                      ? <span className="bg-green-100 text-green-700 px-1.5 py-0.5 rounded-full font-bold">{row.replied}</span>
+                                      : <span className="text-gray-200">0</span>}
+                                  </td>
+                                  <td className="px-3 py-2.5 text-center">
+                                    {row.bounced > 0
+                                      ? <span className="bg-red-100 text-red-600 px-1.5 py-0.5 rounded-full font-bold">{row.bounced}</span>
+                                      : <span className="text-gray-200">—</span>}
+                                  </td>
+                                  <td className="px-3 py-2.5 text-center text-gray-500">{row.open_rate}%</td>
+                                  <td className="px-3 py-2.5 text-center text-gray-500">{row.reply_rate}%</td>
+                                  <td className="px-3 py-2.5 text-gray-400 whitespace-nowrap">
+                                    {row.last_replied_at
+                                      ? <span className="text-green-600 font-medium">{new Date(row.last_replied_at).toLocaleDateString('es-ES',{day:'2-digit',month:'short'})}</span>
+                                      : row.last_opened_at
+                                      ? new Date(row.last_opened_at).toLocaleDateString('es-ES',{day:'2-digit',month:'short'})
+                                      : row.last_email_at
+                                      ? new Date(row.last_email_at).toLocaleDateString('es-ES',{day:'2-digit',month:'short'})
+                                      : '—'}
+                                  </td>
+                                  <td className="px-3 py-2.5">
+                                    {row.has_active_sequence
+                                      ? <span className="text-green-600 font-medium whitespace-nowrap">🟢 Activa</span>
+                                      : row.sequence_completed
+                                      ? <span className="text-blue-500 whitespace-nowrap">✅ Completada</span>
+                                      : <span className="text-gray-300">—</span>}
+                                  </td>
+                                </tr>
+                              )
+                            })}
                           </tbody>
                         </table>
-                        <p className="text-xs text-gray-400 text-right p-2 border-t border-gray-100">
-                          {sortedAnalytics.length} de {analyticsData.length} leads
-                        </p>
+                        <div className="flex items-center justify-between p-2 border-t border-gray-100">
+                          <div className="flex gap-3 text-xs text-gray-400">
+                            <span className="text-green-600 font-medium">✅ {sortedAnalytics.filter(r=>r.replied>0).length} respondieron</span>
+                            <span className="text-violet-600">🔵 {sortedAnalytics.filter(r=>r.clicked>0&&r.replied===0).length} clicaron</span>
+                            <span className="text-sky-600">👁 {sortedAnalytics.filter(r=>r.opened>0&&r.replied===0&&r.clicked===0).length} abrieron</span>
+                            <span className="text-gray-400">📭 {sortedAnalytics.filter(r=>r.sent>0&&r.opened===0).length} sin actividad</span>
+                          </div>
+                          <p className="text-xs text-gray-400">{sortedAnalytics.length} de {analyticsData.length} leads</p>
+                        </div>
                       </div>
                     )}
                   </>
