@@ -45,7 +45,8 @@ export async function GET() {
       .in('campaign_id', campaignIds)
     if (!junctionRes.error) {
       for (const row of (junctionRes.data ?? [])) {
-        const r = row as { campaign_id: string; lead_id: string; lead: { id: string; status: string; score: number } | null }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const r = row as any
         if (!r.lead) continue
         const key = `${r.campaign_id}:${r.lead_id}`
         if (!seen.has(key)) {
