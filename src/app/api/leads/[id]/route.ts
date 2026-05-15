@@ -25,7 +25,7 @@ export async function GET(_req: Request, { params }: Params) {
       .eq('id', id)
       .single(),
     // Query separada para enrichment: siempre coge el más reciente
-    admin
+    supabase
       .from('lead_enrichments')
       .select('*')
       .eq('lead_id', id)
