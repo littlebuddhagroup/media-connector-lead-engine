@@ -6,8 +6,6 @@ export async function GET() {
   const { data: { user }, error: authError } = await supabase.auth.getUser()
   if (authError || !user) return NextResponse.json({ error: 'No autenticado' }, { status: 401 })
 
-  const admin = createAdminClient()
-
   // RLS en campaigns ya filtra por equipo (migration 006)
   // No se necesita filtro manual de user_id
   const { data: campaigns, error } = await supabase
