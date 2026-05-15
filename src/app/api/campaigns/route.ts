@@ -21,7 +21,7 @@ export async function GET() {
   const campaignIds = (campaigns as Camp[]).map((c: Camp) => c.id as string)
 
   // Lead stats per campaign — fuente 1: leads.campaign_id (siempre disponible)
-  const directLeadsRes = await admin
+  const directLeadsRes = await supabase
     .from('leads')
     .select('id, campaign_id, status, score')
     .in('campaign_id', campaignIds)
@@ -39,7 +39,7 @@ export async function GET() {
 
   // Fuente 2: campaign_leads junction (solo si la tabla existe)
   try {
-    const junctionRes = await admin
+    const junctionRes = await supabase
       .from('campaign_leads')
       .select('campaign_id, lead_id, lead:leads(id, status, score)')
       .in('campaign_id', campaignIds)
@@ -57,20 +57,20 @@ export async function GET() {
   } catch { /* tabla campaign_leads aún no existe en Supabase */ }
 
   // Email stats per campaign
-  const { data: emails } = await admin
+  const { data: emails } = await supabase
     .from('emails')
     .select('campaign_id, status, opened_at')
     .in('campaign_id', campaignIds)
 
   // Last activity per campaign
-  const { data: activities } = await admin
+  const { data: activities } = await supabase
     .from('activity_logs')
     .select('campaign_id, created_at')
     .in('campaign_id', campaignIds)
     .order('created_at', { ascending: false })
 
   // Active sequences per campaign
-  const { data: sequences } = await admin
+  const { data: sequences } = await supabase
     .from('sequences')
     .select('campaign_id, status')
     .in('campaign_id', campaignIds)
