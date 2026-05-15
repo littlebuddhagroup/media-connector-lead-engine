@@ -200,6 +200,34 @@ export default function CampaignDetailPage() {
   const [seqPage, setSeqPage] = useState(1)
   const SEQ_PAGE_SIZE = 25
 
+  // ─── Pausar / Reanudar campaña ────────────────────────────────
+  const [togglingPause, setTogglingPause] = useState(false)
+
+  const handleTogglePause = async () => {
+    if (!campaign) return
+    const action = campaign.status === 'paused' ? 'resume' : 'pause'
+    setTogglingPause(true)
+    try {
+      const res = await fetch(`/api/campaigns/${id}/pause`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action }),
+      })
+      const json = await res.json()
+      if (!res.ok) { toast.error(json.error || 'Error'); return }
+      const newStatus = action === 'pause' ? 'paused' : 'active'
+      setCampaign(prev => prev ? { ...prev, status: newStatus } : prev)
+      const msg = action === 'pause'
+        ? `Campaña pausada · ${json.sequences_paused} secuencias detenidas`
+        : `Campaña reanudada · ${json.sequences_resumed} secuencias reactivadas`
+      toast.success(msg)
+    } catch {
+      toast.error('Error de conexión')
+    } finally {
+      setTogglingPause(false)
+    }
+  }
+
   // Reprogramación masiva de secuencias (3 inputs independientes)
   const [bulkDates, setBulkDates] = useState<[string, string, string]>(['', '', ''])
   const [applyingBulk, setApplyingBulk] = useState(false)
@@ -914,6 +942,26 @@ ${noActivity.map(r => personRow(r, '#fff')).join('')}
             <Link href="/campaigns" className="btn-secondary text-xs py-1.5">
               <ArrowLeft className="w-3.5 h-3.5" /> Campañas
             </Link>
+            {/* Botón Pausar / Reanudar — solo visible en campañas activas o pausadas */}
+            {(campaign.status === 'active' || campaign.status === 'paused') && (
+              <button
+                onClick={handleTogglePause}
+                disabled={togglingPause}
+                className={`flex items-center gap-1.5 text-xs py-1.5 px-3 rounded-lg font-medium transition-colors disabled:opacity-60 ${
+                  campaign.status === 'paused'
+                    ? 'bg-green-100 text-green-700 hover:bg-green-200'
+                    : 'bg-amber-100 text-amber-700 hover:bg-amber-200'
+                }`}
+              >
+                {togglingPause
+                  ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  : campaign.status === 'paused'
+                    ? <Play className="w-3.5 h-3.5" />
+                    : <Pause className="w-3.5 h-3.5" />
+                }
+                {campaign.status === 'paused' ? 'Reanudar campaña' : 'Pausar campaña'}
+              </button>
+            )}
             <button onClick={() => setShowAssignModal(true)} className="btn-primary text-xs py-1.5">
               <Plus className="w-3.5 h-3.5" /> Añadir leads
             </button>

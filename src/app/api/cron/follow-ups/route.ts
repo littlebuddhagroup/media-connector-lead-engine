@@ -18,7 +18,7 @@ const REPLIED_STATUSES = ['replied', 'interested', 'meeting_scheduled']
 
 type LeadRow = { id: string; status: string; email: string | null; company_name: string }
 type SettingsRow = { user_id: string; email_from_address: string | null; email_from_name: string | null; email_signature: string | null }
-type FollowUpRow = { id: string; lead_id: string; user_id: string; campaign_id: string | null; subject: string; body: string }
+type FollowUpRow = { id: string; lead_id: string; user_id: string; campaign_id: string | null; subject: string; body: string; campaign?: { status: string } | null }
 
 type FollowUpResult =
   | { type: 'cancelled'; followUpId: string }
@@ -37,9 +37,10 @@ export async function GET(request: Request) {
   const now = new Date().toISOString()
 
   // Obtener follow-ups pendientes (limit 100)
+  // Excluimos los que pertenecen a campañas pausadas
   const { data: pendingFollowUps, error } = await supabase
     .from('follow_ups')
-    .select('id, lead_id, user_id, campaign_id, subject, body')
+    .select('id, lead_id, user_id, campaign_id, subject, body, campaign:campaigns(status)')
     .eq('status', 'pending')
     .lte('scheduled_for', now)
     .limit(100)
@@ -53,8 +54,19 @@ export async function GET(request: Request) {
     return NextResponse.json({ message: 'No hay follow-ups pendientes', processed: 0 })
   }
 
+  // Filtrar follow-ups de campañas pausadas (no enviar mientras la campaña esté en pausa)
+  const allFollowUps = pendingFollowUps as FollowUpRow[]
+  const followUps = allFollowUps.filter(f => {
+    if (!f.campaign_id) return true          // sin campaña → enviar siempre
+    if (!f.campaign) return true             // campaña no encontrada → dejar pasar
+    return f.campaign.status !== 'paused'   // pausada → saltar
+  })
+
+  if (!followUps.length) {
+    return NextResponse.json({ message: 'No hay follow-ups pendientes (activos)', processed: 0 })
+  }
+
   // ── Pre-fetch leads + settings en 2 queries bulk ──
-  const followUps = pendingFollowUps as FollowUpRow[]
   const leadIds = [...new Set(followUps.map(f => f.lead_id))]
   const userIds = [...new Set(followUps.map(f => f.user_id))]
 
