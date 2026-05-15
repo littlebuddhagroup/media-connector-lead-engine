@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
-import { createAdminClient } from '@/lib/supabase/server'
 
 export async function GET() {
   const supabase = await createClient()
@@ -9,26 +8,11 @@ export async function GET() {
 
   const admin = createAdminClient()
 
-  // Detectar si el usuario es miembro de un equipo — en ese caso incluir campañas del owner
-  const { data: teamMembership } = await admin
-    .from('team_members')
-    .select('team_id, role, team:teams(owner_id)')
-    .eq('user_id', user.id)
-    .eq('status', 'active')
-    .maybeSingle()
-
-  // IDs de usuario cuyos datos puede ver este usuario (el propio + owner del equipo si aplica)
-  const visibleUserIds: string[] = [user.id]
-  if (teamMembership?.team) {
-    const ownerId = (teamMembership.team as { owner_id: string }).owner_id
-    if (ownerId && ownerId !== user.id) visibleUserIds.push(ownerId)
-  }
-
-  // Campaigns base
-  const { data: campaigns, error } = await admin
+  // RLS en campaigns ya filtra por equipo (migration 006)
+  // No se necesita filtro manual de user_id
+  const { data: campaigns, error } = await supabase
     .from('campaigns')
     .select('*')
-    .in('user_id', visibleUserIds)
     .order('created_at', { ascending: false })
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })

@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
-import { createAdminClient } from '@/lib/supabase/server'
 
 type Params = { params: Promise<{ id: string }> }
 
@@ -10,24 +9,9 @@ export async function GET(_req: Request, { params }: Params) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'No autenticado' }, { status: 401 })
 
-  const admin = createAdminClient()
-
-  // Detectar si el usuario pertenece a un equipo para ampliar visibilidad
-  const { data: teamMembership } = await admin
-    .from('team_members')
-    .select('team_id, team:teams(owner_id)')
-    .eq('user_id', user.id)
-    .eq('status', 'active')
-    .maybeSingle()
-
-  const visibleUserIds: string[] = [user.id]
-  if (teamMembership?.team) {
-    const ownerId = (teamMembership.team as { owner_id: string }).owner_id
-    if (ownerId && ownerId !== user.id) visibleUserIds.push(ownerId)
-  }
-
+  // RLS en leads ya filtra por equipo (migration 006)
   const [leadRes, enrichmentRes] = await Promise.all([
-    admin
+    supabase
       .from('leads')
       .select(`
         *,
@@ -39,7 +23,6 @@ export async function GET(_req: Request, { params }: Params) {
         activity_logs(*)
       `)
       .eq('id', id)
-      .in('user_id', visibleUserIds)
       .single(),
     // Query separada para enrichment: siempre coge el más reciente
     admin
@@ -68,12 +51,11 @@ export async function PATCH(request: Request, { params }: Params) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'No autenticado' }, { status: 401 })
 
-  // Obtener estado actual para log de actividad
+  // Obtener estado actual para log de actividad (RLS filtra por equipo)
   const { data: current } = await supabase
     .from('leads')
     .select('status, campaign_id')
     .eq('id', id)
-    .eq('user_id', user.id)
     .single()
 
   const body = await request.json()
@@ -81,7 +63,6 @@ export async function PATCH(request: Request, { params }: Params) {
     .from('leads')
     .update(body)
     .eq('id', id)
-    .eq('user_id', user.id)
     .select()
     .single()
 
@@ -110,7 +91,7 @@ export async function DELETE(_req: Request, { params }: Params) {
   if (!user) return NextResponse.json({ error: 'No autenticado' }, { status: 401 })
 
   const { error } = await supabase
-    .from('leads').delete().eq('id', id).eq('user_id', user.id)
+    .from('leads').delete().eq('id', id)
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
   return NextResponse.json({ message: 'Lead eliminado' })

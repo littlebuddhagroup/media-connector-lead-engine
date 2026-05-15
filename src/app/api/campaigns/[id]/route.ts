@@ -16,7 +16,6 @@ export async function GET(_req: Request, { params }: Params) {
       leads(id, company_name, status, priority, score, email, created_at)
     `)
     .eq('id', id)
-    .eq('user_id', user.id)
     .single()
 
   if (error) return NextResponse.json({ error: 'Campaña no encontrada' }, { status: 404 })
@@ -51,7 +50,6 @@ export async function PATCH(request: Request, { params }: Params) {
     .from('campaigns')
     .update(fullUpdate)
     .eq('id', id)
-    .eq('user_id', user.id)
     .select()
     .single()
 
@@ -63,7 +61,6 @@ export async function PATCH(request: Request, { params }: Params) {
       .from('campaigns')
       .update(coreUpdate)
       .eq('id', id)
-      .eq('user_id', user.id)
       .select()
       .single()
 
@@ -88,7 +85,6 @@ export async function DELETE(_req: Request, { params }: Params) {
     .from('sequences')
     .select('id')
     .eq('campaign_id', id)
-    .eq('user_id', user.id)
 
   if (seqs?.length) {
     const seqIds = seqs.map(s => s.id)
@@ -100,7 +96,6 @@ export async function DELETE(_req: Request, { params }: Params) {
     .from('campaigns')
     .delete()
     .eq('id', id)
-    .eq('user_id', user.id)
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
   return NextResponse.json({ message: 'Campaña eliminada' })
