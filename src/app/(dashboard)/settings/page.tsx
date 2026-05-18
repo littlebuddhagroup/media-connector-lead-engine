@@ -2,7 +2,7 @@
 
 import { useState, useEffect, lazy, Suspense } from 'react'
 import TopBar from '@/components/layout/TopBar'
-import { Save, CheckCircle, AlertCircle, Zap, XCircle, Loader2 } from 'lucide-react'
+import { Save, CheckCircle, AlertCircle, Zap, XCircle, Loader2, Bell } from 'lucide-react'
 import { toast } from '@/components/ui/Toast'
 
 const RichTextEditor = lazy(() => import('@/components/ui/RichTextEditor'))
@@ -28,6 +28,10 @@ export default function SettingsPage() {
     default_language: 'es',
     default_tone: 'consultivo',
     scraping_provider: 'serpapi',
+    // Notificaciones e Inteligencia
+    notification_emails: '' as string,
+    briefing_enabled: true,
+    signal_alerts_enabled: true,
   })
   const [serviceStatus, setServiceStatus] = useState<Record<string, boolean>>({})
   const [resendFrom, setResendFrom] = useState('')
@@ -362,6 +366,55 @@ export default function SettingsPage() {
                 <option value="en">Inglés</option>
                 <option value="pt">Portugués</option>
               </select>
+            </div>
+          </div>
+
+          {/* ── Notificaciones Powerlead ── */}
+          <div className="pt-2">
+            <div className="flex items-center gap-2 mb-4">
+              <Bell className="w-4 h-4 text-brand-600" />
+              <h3 className="text-sm font-semibold text-gray-900">Notifications</h3>
+            </div>
+            <div className="space-y-4">
+              <div>
+                <label className="label">Notification emails</label>
+                <input
+                  className="input"
+                  type="text"
+                  placeholder="email@domain.com, another@domain.com"
+                  value={settings.notification_emails}
+                  onChange={e => setSettings(s => ({ ...s, notification_emails: e.target.value }))}
+                />
+                <p className="text-xs text-gray-400 mt-1">
+                  Comma-separated. Leave empty to use your account email.
+                </p>
+              </div>
+              <div className="flex flex-col gap-3">
+                <label className="flex items-center gap-3 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    className="w-4 h-4 accent-brand-600"
+                    checked={settings.briefing_enabled}
+                    onChange={e => setSettings(s => ({ ...s, briefing_enabled: e.target.checked }))}
+                  />
+                  <div>
+                    <p className="text-sm font-medium text-gray-800">Daily intelligence briefing</p>
+                    <p className="text-xs text-gray-500">Receive a daily summary of your CRM activity and upcoming sends (08:00)</p>
+                  </div>
+                </label>
+                <label className="flex items-center gap-3 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    className="w-4 h-4 accent-brand-600"
+                    checked={settings.signal_alerts_enabled}
+                    onChange={e => setSettings(s => ({ ...s, signal_alerts_enabled: e.target.checked }))}
+                  />
+                  <div>
+                    <p className="text-sm font-medium text-gray-800">Buying signal alerts</p>
+                    <p className="text-xs text-gray-500">Get alerted when a lead shows a packaging/artwork buying signal (product launch, new hire, funding…)</p>
+                  </div>
+                </label>
+              </div>
             </div>
           </div>
 

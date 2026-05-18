@@ -135,5 +135,6 @@ export async function POST(request: Request) {
     description: `Fuente: ${body.source ?? 'manual'}`,
   })
 
-  return NextResponse.json({ data }, { status: 201 })
+  const shouldEnrich = Boolean(data.domain || data.website)
+  return NextResponse.json({ data, shouldEnrich }, { status: 201 })
 }

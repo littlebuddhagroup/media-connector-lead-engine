@@ -6,10 +6,11 @@ import TopBar from '@/components/layout/TopBar'
 import {
   Search, Plus, ChevronLeft, ChevronRight, Telescope, Zap, Loader2,
   CheckSquare, Square, X, Target, Check, Trash2, ArrowUpDown, ArrowUp, ArrowDown,
-  List, Eye, Tag, Bookmark, BookmarkPlus, FolderPlus, Folder, ChevronDown,
-  MoreHorizontal, Pencil, Save,
+  List, Eye, Tag, Bookmark, BookmarkPlus, FolderPlus, Folder, ChevronDown, ChevronRight as ChevronRightIcon,
+  MoreHorizontal, Pencil, Save, Layers,
 } from 'lucide-react'
 import { statusLabel, priorityColor, scoreToBg, formatDateRelative } from '@/lib/utils'
+import CompanyLogo from '@/components/ui/CompanyLogo'
 import type { Lead, Campaign } from '@/types'
 import Modal from '@/components/ui/Modal'
 import { toast } from '@/components/ui/Toast'
@@ -200,6 +201,11 @@ export default function LeadsPage() {
   const [localTags, setLocalTags] = useState<Record<string, string[]>>({})
 
   const [perPage, setPerPage] = useState(50)
+
+  // Agrupación por empresa y auto-enriquecimiento
+  const [groupByCompany, setGroupByCompany] = useState(false)
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set())
+  const [enrichingLead, setEnrichingLead] = useState<{ id: string; name: string } | null>(null)
 
   const fetchLeads = useCallback(async () => {
     setLoading(true)
@@ -560,6 +566,23 @@ export default function LeadsPage() {
         })
       }
       setShowNewLead(false); setNewLead(EMPTY_LEAD); fetchLeads()
+      // Auto-enriquecimiento si hay dominio/web
+      if (json.shouldEnrich && json.data?.id) {
+        const leadName = json.data.company_name
+        setEnrichingLead({ id: json.data.id, name: leadName })
+        fetch(`/api/leads/${json.data.id}/enrich`, { method: 'POST' })
+          .then(async r => {
+            const enrichJson = await r.json()
+            setEnrichingLead(null)
+            if (r.ok) {
+              toast.success('Lead enriquecido', `${leadName} — Score: ${enrichJson.data?.score ?? '—'}/100`)
+              fetchLeads()
+            } else {
+              toast.error('Enriquecimiento fallido', enrichJson.error ?? 'No se pudo enriquecer')
+            }
+          })
+          .catch(() => { setEnrichingLead(null) })
+      }
     } else { const json = await res.json(); setSaveError(json.error || 'Error al crear el lead') }
   }
 
@@ -854,6 +877,13 @@ export default function LeadsPage() {
               <button onClick={() => setShowNewLead(true)} className="btn-secondary text-xs py-1.5">
                 <Plus className="w-3.5 h-3.5" /><span className="hidden sm:inline"> Nuevo</span>
               </button>
+              <button
+                onClick={() => { setGroupByCompany(g => !g); setExpandedGroups(new Set()) }}
+                className={`btn-secondary text-xs py-1.5 ${groupByCompany ? 'bg-brand-50 text-brand-700 border-brand-200' : ''}`}
+                title="Agrupar por empresa"
+              >
+                <Layers className="w-3.5 h-3.5" /><span className="hidden sm:inline"> Agrupar</span>
+              </button>
               <Link
                 href={activeListId
                   ? `/imports?list=${activeListId}&listName=${encodeURIComponent(lists.find(l => l.id === activeListId)?.name ?? '')}`
@@ -865,6 +895,20 @@ export default function LeadsPage() {
             </div>
           }
         />
+
+        {/* Banner de auto-enriquecimiento en curso */}
+        {enrichingLead && (
+          <div className="flex items-center gap-3 px-5 py-3 text-sm bg-brand-50 border-b border-brand-100">
+            <Loader2 className="w-4 h-4 animate-spin text-brand-600 shrink-0" />
+            <div className="flex-1 min-w-0">
+              <span className="font-semibold text-brand-700">Enriqueciendo lead con IA</span>
+              <span className="ml-2 text-xs text-brand-500">{enrichingLead.name}</span>
+            </div>
+            <div className="w-24 h-1 bg-brand-200 rounded-full overflow-hidden shrink-0">
+              <div className="h-full bg-brand-500 rounded-full" style={{ animation: 'progress-indeterminate 1.5s ease-in-out infinite', width: '40%' }} />
+            </div>
+          </div>
+        )}
 
         <div className="p-2 md:p-4 space-y-2 md:space-y-3">
 
@@ -1011,7 +1055,7 @@ export default function LeadsPage() {
                     <th className="px-2 md:px-3 py-3 w-8"></th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-gray-50">
+                <tbody className="divide-y divide-gray-100">
                   {loading && (
                     <tr><td colSpan={13} className="px-4 py-8 text-center text-gray-400">
                       <Loader2 className="w-5 h-5 animate-spin inline mr-2" />Cargando leads...
@@ -1029,62 +1073,176 @@ export default function LeadsPage() {
                       )}
                     </td></tr>
                   )}
-                  {!loading && leads.map((lead) => {
-                    const leadTags = localTags[lead.id] ?? (lead as unknown as { tags?: string[] }).tags ?? []
-                    return (
-                      <tr key={lead.id}
-                        className={`transition-colors ${selected.has(lead.id) ? 'bg-brand-50/40' : 'hover:bg-gray-50/50'}`}>
-                        <td className="px-3 py-2.5">
-                          <button onClick={() => toggleOne(lead.id)} className="text-gray-400 hover:text-brand-600 transition-colors">
-                            {selected.has(lead.id) ? <CheckSquare className="w-4 h-4 text-brand-600" /> : <Square className="w-4 h-4" />}
-                          </button>
-                        </td>
-                        <td className="px-3 py-2.5">
-                          <Link href={`/leads/${lead.id}`} className="font-medium text-gray-900 hover:text-brand-700 block truncate max-w-[130px]">
-                            {lead.company_name}
-                          </Link>
-                          {lead.website && <p className="text-xs text-gray-400 truncate max-w-[130px]">{lead.domain || lead.website}</p>}
-                        </td>
-                        <td className="hidden md:table-cell px-3 py-2.5 text-gray-700 text-sm whitespace-nowrap font-medium">
-                          {lead.first_name || <span className="text-gray-300 font-normal text-xs">—</span>}
-                        </td>
-                        <td className="hidden lg:table-cell px-3 py-2.5 text-gray-700 text-sm whitespace-nowrap font-medium">
-                          {lead.last_name || <span className="text-gray-300 font-normal text-xs">—</span>}
-                        </td>
-                        <td className="hidden lg:table-cell px-3 py-2.5 text-gray-600 text-sm max-w-[140px] truncate">
-                          {(lead as unknown as { job_title?: string }).job_title || <span className="text-gray-300 text-xs">—</span>}
-                        </td>
-                        <td className="hidden lg:table-cell px-3 py-2.5 text-gray-600 text-sm max-w-[120px] truncate">
-                          {lead.department || <span className="text-gray-300 text-xs">—</span>}
-                        </td>
-                        <td className="hidden md:table-cell px-3 py-2.5 text-gray-700 text-sm max-w-[160px] truncate">{lead.email || <span className="text-gray-300 text-xs">—</span>}</td>
-                        <td className="hidden lg:table-cell px-3 py-2.5 text-gray-600 text-sm max-w-[110px] truncate">{lead.sector || <span className="text-gray-300 text-xs">—</span>}</td>
-                        <td className="hidden lg:table-cell px-3 py-2.5 max-w-[180px]">
-                          <TagEditor
-                            leadId={lead.id}
-                            initialTags={leadTags}
-                            onSaved={tags => setLocalTags(prev => ({ ...prev, [lead.id]: tags }))}
-                          />
-                        </td>
-                        <td className="hidden lg:table-cell px-3 py-2.5 text-gray-500 text-xs max-w-[100px] truncate">
-                          {(lead as unknown as { campaign?: { name: string } }).campaign?.name || '—'}
-                        </td>
-                        <td className="px-2 md:px-3 py-2.5">
-                          <select className="text-xs border-0 bg-transparent cursor-pointer focus:outline-none max-w-[80px] md:max-w-none"
-                            value={lead.status} onChange={(e) => updateLeadStatus(lead.id, e.target.value)}>
-                            {STATUSES.map(s => <option key={s} value={s}>{statusLabel(s)}</option>)}
-                          </select>
-                        </td>
-                        <td className="px-2 md:px-3 py-2.5">
-                          <span className={`badge font-semibold tabular-nums ${scoreToBg(lead.score)}`}>{lead.score}</span>
-                        </td>
-                        <td className="hidden md:table-cell px-3 py-2.5 text-gray-400 text-xs whitespace-nowrap">{formatDateRelative(lead.created_at)}</td>
-                        <td className="px-2 md:px-3 py-2.5">
-                          <Link href={`/leads/${lead.id}`} className="text-xs text-brand-600 hover:text-brand-700">Ver →</Link>
-                        </td>
-                      </tr>
-                    )
-                  })}
+                  {!loading && (() => {
+                    if (!groupByCompany) {
+                      return leads.map((lead) => {
+                        const leadTags = localTags[lead.id] ?? (lead as unknown as { tags?: string[] }).tags ?? []
+                        return (
+                          <tr key={lead.id}
+                            className={`transition-colors ${selected.has(lead.id) ? 'bg-brand-50/40' : 'odd:bg-white even:bg-indigo-50/30 hover:bg-indigo-50/60'}`}>
+                            <td className="px-3 py-2.5">
+                              <button onClick={() => toggleOne(lead.id)} className="text-gray-400 hover:text-brand-600 transition-colors">
+                                {selected.has(lead.id) ? <CheckSquare className="w-4 h-4 text-brand-600" /> : <Square className="w-4 h-4" />}
+                              </button>
+                            </td>
+                            <td className="px-3 py-2.5">
+                              <div className="flex items-center gap-2 min-w-0">
+                                <CompanyLogo website={lead.website} companyName={lead.company_name} size={24} />
+                                <div className="min-w-0">
+                                  <Link href={`/leads/${lead.id}`} className="font-medium text-gray-900 hover:text-brand-700 block truncate max-w-[120px]">
+                                    {lead.company_name}
+                                  </Link>
+                                  {lead.website && <p className="text-xs text-gray-400 truncate max-w-[120px]">{lead.domain || lead.website}</p>}
+                                </div>
+                              </div>
+                            </td>
+                            <td className="hidden md:table-cell px-3 py-2.5 text-gray-700 text-sm whitespace-nowrap font-medium">
+                              {lead.first_name || <span className="text-gray-300 font-normal text-xs">—</span>}
+                            </td>
+                            <td className="hidden lg:table-cell px-3 py-2.5 text-gray-700 text-sm whitespace-nowrap font-medium">
+                              {lead.last_name || <span className="text-gray-300 font-normal text-xs">—</span>}
+                            </td>
+                            <td className="hidden lg:table-cell px-3 py-2.5 text-gray-600 text-sm max-w-[140px] truncate">
+                              {(lead as unknown as { job_title?: string }).job_title || <span className="text-gray-300 text-xs">—</span>}
+                            </td>
+                            <td className="hidden lg:table-cell px-3 py-2.5 text-gray-600 text-sm max-w-[120px] truncate">
+                              {lead.department || <span className="text-gray-300 text-xs">—</span>}
+                            </td>
+                            <td className="hidden md:table-cell px-3 py-2.5 text-gray-700 text-sm max-w-[160px] truncate">{lead.email || <span className="text-gray-300 text-xs">—</span>}</td>
+                            <td className="hidden lg:table-cell px-3 py-2.5 text-gray-600 text-sm max-w-[110px] truncate">{lead.sector || <span className="text-gray-300 text-xs">—</span>}</td>
+                            <td className="hidden lg:table-cell px-3 py-2.5 max-w-[180px]">
+                              <TagEditor
+                                leadId={lead.id}
+                                initialTags={leadTags}
+                                onSaved={tags => setLocalTags(prev => ({ ...prev, [lead.id]: tags }))}
+                              />
+                            </td>
+                            <td className="hidden lg:table-cell px-3 py-2.5 text-gray-500 text-xs max-w-[100px] truncate">
+                              {(lead as unknown as { campaign?: { name: string } }).campaign?.name || '—'}
+                            </td>
+                            <td className="px-2 md:px-3 py-2.5">
+                              <select className="text-xs border-0 bg-transparent cursor-pointer focus:outline-none max-w-[80px] md:max-w-none"
+                                value={lead.status} onChange={(e) => updateLeadStatus(lead.id, e.target.value)}>
+                                {STATUSES.map(s => <option key={s} value={s}>{statusLabel(s)}</option>)}
+                              </select>
+                            </td>
+                            <td className="px-2 md:px-3 py-2.5">
+                              <span className={`badge font-semibold tabular-nums ${scoreToBg(lead.score)}`}>{lead.score}</span>
+                            </td>
+                            <td className="hidden md:table-cell px-3 py-2.5 text-gray-400 text-xs whitespace-nowrap">{formatDateRelative(lead.created_at)}</td>
+                            <td className="px-2 md:px-3 py-2.5">
+                              <Link href={`/leads/${lead.id}`} className="text-xs text-brand-600 hover:text-brand-700">Ver →</Link>
+                            </td>
+                          </tr>
+                        )
+                      })
+                    }
+
+                    // ── Agrupado por empresa ──────────────────────────────
+                    const groups = new Map<string, Lead[]>()
+                    for (const lead of leads) {
+                      const key = lead.company_name.trim().toLowerCase()
+                      if (!groups.has(key)) groups.set(key, [])
+                      groups.get(key)!.push(lead)
+                    }
+                    const groupEntries = Array.from(groups.entries())
+                    return groupEntries.map(([groupKey, groupLeads]) => {
+                      const first = groupLeads[0]
+                      const isExpanded = expandedGroups.has(groupKey)
+                      const maxScore = Math.max(...groupLeads.map(l => l.score ?? 0))
+                      const toggle = () => setExpandedGroups(prev => {
+                        const next = new Set(prev)
+                        next.has(groupKey) ? next.delete(groupKey) : next.add(groupKey)
+                        return next
+                      })
+                      return (
+                        <>
+                          {/* Fila de grupo */}
+                          <tr key={`group-${groupKey}`}
+                            className="bg-gray-50/80 hover:bg-brand-50/30 cursor-pointer border-b border-gray-100 transition-colors"
+                            onClick={toggle}>
+                            <td className="px-3 py-3" colSpan={2}>
+                              <div className="flex items-center gap-2">
+                                <span className="text-gray-400">
+                                  {isExpanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRightIcon className="w-3.5 h-3.5" />}
+                                </span>
+                                <CompanyLogo website={first.website} companyName={first.company_name} size={24} />
+                                <span className="font-semibold text-sm text-gray-900 truncate">{first.company_name}</span>
+                                <span className="ml-1 text-xs bg-brand-100 text-brand-700 px-1.5 py-0.5 rounded-full font-medium">
+                                  {groupLeads.length} contacto{groupLeads.length !== 1 ? 's' : ''}
+                                </span>
+                              </div>
+                            </td>
+                            <td className="hidden md:table-cell px-3 py-3 text-xs text-gray-400" colSpan={7}>
+                              {first.website || first.domain || ''}
+                            </td>
+                            <td className="hidden lg:table-cell px-3 py-3" colSpan={2}></td>
+                            <td className="px-2 md:px-3 py-3">
+                              <span className={`badge font-semibold tabular-nums ${scoreToBg(maxScore)}`}>{maxScore}</span>
+                            </td>
+                            <td className="hidden md:table-cell px-3 py-3"></td>
+                            <td className="px-2 md:px-3 py-3"></td>
+                          </tr>
+                          {/* Filas de contactos (expandido) */}
+                          {isExpanded && groupLeads.map(lead => {
+                            const leadTags = localTags[lead.id] ?? (lead as unknown as { tags?: string[] }).tags ?? []
+                            return (
+                              <tr key={lead.id}
+                                className={`border-l-2 border-brand-300 transition-colors ${selected.has(lead.id) ? 'bg-brand-50/40' : 'odd:bg-white even:bg-indigo-50/30 hover:bg-indigo-50/60'}`}>
+                                <td className="pl-8 pr-3 py-2.5">
+                                  <button onClick={e => { e.stopPropagation(); toggleOne(lead.id) }} className="text-gray-400 hover:text-brand-600 transition-colors">
+                                    {selected.has(lead.id) ? <CheckSquare className="w-4 h-4 text-brand-600" /> : <Square className="w-4 h-4" />}
+                                  </button>
+                                </td>
+                                <td className="px-3 py-2.5">
+                                  <Link href={`/leads/${lead.id}`} className="font-medium text-gray-700 hover:text-brand-700 block truncate max-w-[130px] text-sm">
+                                    {lead.first_name && lead.last_name ? `${lead.first_name} ${lead.last_name}` : lead.email || lead.company_name}
+                                  </Link>
+                                </td>
+                                <td className="hidden md:table-cell px-3 py-2.5 text-gray-700 text-sm whitespace-nowrap font-medium">
+                                  {lead.first_name || <span className="text-gray-300 font-normal text-xs">—</span>}
+                                </td>
+                                <td className="hidden lg:table-cell px-3 py-2.5 text-gray-700 text-sm whitespace-nowrap font-medium">
+                                  {lead.last_name || <span className="text-gray-300 font-normal text-xs">—</span>}
+                                </td>
+                                <td className="hidden lg:table-cell px-3 py-2.5 text-gray-600 text-sm max-w-[140px] truncate">
+                                  {(lead as unknown as { job_title?: string }).job_title || <span className="text-gray-300 text-xs">—</span>}
+                                </td>
+                                <td className="hidden lg:table-cell px-3 py-2.5 text-gray-600 text-sm max-w-[120px] truncate">
+                                  {lead.department || <span className="text-gray-300 text-xs">—</span>}
+                                </td>
+                                <td className="hidden md:table-cell px-3 py-2.5 text-gray-700 text-sm max-w-[160px] truncate">{lead.email || <span className="text-gray-300 text-xs">—</span>}</td>
+                                <td className="hidden lg:table-cell px-3 py-2.5 text-gray-600 text-sm max-w-[110px] truncate">{lead.sector || <span className="text-gray-300 text-xs">—</span>}</td>
+                                <td className="hidden lg:table-cell px-3 py-2.5 max-w-[180px]">
+                                  <TagEditor
+                                    leadId={lead.id}
+                                    initialTags={leadTags}
+                                    onSaved={tags => setLocalTags(prev => ({ ...prev, [lead.id]: tags }))}
+                                  />
+                                </td>
+                                <td className="hidden lg:table-cell px-3 py-2.5 text-gray-500 text-xs max-w-[100px] truncate">
+                                  {(lead as unknown as { campaign?: { name: string } }).campaign?.name || '—'}
+                                </td>
+                                <td className="px-2 md:px-3 py-2.5">
+                                  <select className="text-xs border-0 bg-transparent cursor-pointer focus:outline-none max-w-[80px] md:max-w-none"
+                                    value={lead.status} onChange={(e) => updateLeadStatus(lead.id, e.target.value)}>
+                                    {STATUSES.map(s => <option key={s} value={s}>{statusLabel(s)}</option>)}
+                                  </select>
+                                </td>
+                                <td className="px-2 md:px-3 py-2.5">
+                                  <span className={`badge font-semibold tabular-nums ${scoreToBg(lead.score)}`}>{lead.score}</span>
+                                </td>
+                                <td className="hidden md:table-cell px-3 py-2.5 text-gray-400 text-xs whitespace-nowrap">{formatDateRelative(lead.created_at)}</td>
+                                <td className="px-2 md:px-3 py-2.5">
+                                  <Link href={`/leads/${lead.id}`} className="text-xs text-brand-600 hover:text-brand-700">Ver →</Link>
+                                </td>
+                              </tr>
+                            )
+                          })}
+                        </>
+                      )
+                    })
+                  })()}
                 </tbody>
               </table>
             </div>

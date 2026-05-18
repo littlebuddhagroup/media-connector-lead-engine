@@ -349,9 +349,9 @@ function ImportsPageContent() {
                       ))}
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-gray-50">
+                  <tbody className="divide-y divide-gray-100">
                     {previewRows.map((row, i) => (
-                      <tr key={i}>
+                      <tr key={i} className="odd:bg-white even:bg-indigo-50/30">
                         {LEAD_FIELDS.filter(f => mapping[f.key]).map(f => (
                           <td key={f.key} className="px-3 py-2 text-gray-700 max-w-[150px] truncate">
                             {row[mapping[f.key]] || '—'}

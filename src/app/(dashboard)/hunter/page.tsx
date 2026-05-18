@@ -73,6 +73,36 @@ interface HunterResult {
   contact_linkedin?: string
   already_exists: boolean
   added?: boolean
+  source?: 'hunter' | 'pdl' | 'apollo'
+}
+
+type PillState = 'idle' | 'loading' | 'ok' | 'empty' | 'skipped'
+
+function ServicePill({ label, sublabel, state, detail }: {
+  label: string
+  sublabel: string
+  state: PillState
+  detail?: string
+}) {
+  const configs: Record<PillState, { dot: string; text: string; bg: string; border: string }> = {
+    idle:    { dot: 'bg-gray-300',              text: 'text-gray-400',  bg: 'bg-gray-50',   border: 'border-gray-100'  },
+    loading: { dot: 'bg-gray-300 animate-pulse', text: 'text-gray-400', bg: 'bg-gray-50',   border: 'border-gray-100'  },
+    ok:      { dot: 'bg-green-500',             text: 'text-green-700', bg: 'bg-green-50',  border: 'border-green-100' },
+    empty:   { dot: 'bg-amber-400',             text: 'text-amber-700', bg: 'bg-amber-50',  border: 'border-amber-100' },
+    skipped: { dot: 'bg-gray-300',              text: 'text-gray-400',  bg: 'bg-gray-50',   border: 'border-gray-100'  },
+  }
+  const c = configs[state]
+  return (
+    <div className={`rounded-xl border px-3.5 py-3 ${c.bg} ${c.border}`}>
+      <div className="flex items-center gap-2 mb-1">
+        <span className={`w-2 h-2 rounded-full shrink-0 ${c.dot}`} />
+        <span className="text-[11px] font-semibold text-gray-700 truncate">{label}</span>
+      </div>
+      <p className="text-[10px] text-gray-400 mb-1 pl-4">{sublabel}</p>
+      {detail && <p className={`text-[11px] font-medium pl-4 truncate ${c.text}`}>{detail}</p>}
+      {state === 'loading' && <p className="text-[11px] text-gray-400 pl-4">buscando...</p>}
+    </div>
+  )
 }
 
 function ConfidenceBadge({ score }: { score: number }) {
@@ -100,12 +130,22 @@ export default function HunterPage() {
 
   const [results, setResults] = useState<HunterResult[]>([])
   const [meta, setMeta] = useState<{ organization?: string; domain?: string; pattern?: string } | null>(null)
+  const [filteredByCountry, setFilteredByCountry] = useState(false)
+  const [resolvedDomain, setResolvedDomain] = useState<string | null>(null)
+  const [serviceStatus, setServiceStatus] = useState<{
+    serp: { used: boolean; resolved: string | null }
+    hunter: { searched: boolean; count: number }
+    pdl: { searched: boolean; count: number }
+    apollo: { searched: boolean; count: number }
+  } | null>(null)
   const [loading, setLoading] = useState(false)
   const [adding, setAdding] = useState<string | null>(null)
   const [addingAll, setAddingAll] = useState(false)
   const [addAllProgress, setAddAllProgress] = useState({ done: 0, total: 0 })
   const [error, setError] = useState('')
   const [searched, setSearched] = useState(false)
+  // Auto-enriquecimiento en curso
+  const [enrichingLeads, setEnrichingLeads] = useState<{ id: string; name: string }[]>([])
 
   useEffect(() => {
     Promise.all([
@@ -125,6 +165,8 @@ export default function HunterPage() {
     setResults([])
     setMeta(null)
     setSearched(true)
+    setResolvedDomain(null)
+    setServiceStatus(null)
 
     const res = await fetch('/api/hunter', {
       method: 'POST',
@@ -137,6 +179,27 @@ export default function HunterPage() {
     if (!res.ok) { setError(json.error || 'Error en la búsqueda'); return }
     setResults(json.data ?? [])
     setMeta(json.meta ?? null)
+    setFilteredByCountry(json.country_warning ?? false)
+    setResolvedDomain(json.resolved_domain ?? null)
+    setServiceStatus(json.service_status ?? null)
+  }
+
+  const triggerEnrich = (leadId: string, leadName: string) => {
+    setEnrichingLeads(prev => [...prev, { id: leadId, name: leadName }])
+    fetch(`/api/leads/${leadId}/enrich`, { method: 'POST' })
+      .then(async r => {
+        const json = await r.json()
+        setEnrichingLeads(prev => prev.filter(l => l.id !== leadId))
+        if (r.ok) {
+          toast.success('Lead enriquecido', `${leadName} — Score: ${json.data?.score ?? '—'}/100`)
+        } else {
+          toast.error('Enriquecimiento fallido', json.error ?? 'No se pudo enriquecer el lead')
+        }
+      })
+      .catch(() => {
+        setEnrichingLeads(prev => prev.filter(l => l.id !== leadId))
+        toast.error('Enriquecimiento fallido', 'Error de conexión')
+      })
   }
 
   const handleAdd = async (result: HunterResult, idx: number) => {
@@ -148,8 +211,10 @@ export default function HunterPage() {
     })
     setAdding(null)
     if (res.ok) {
+      const json = await res.json()
       setResults(prev => prev.map((r, i) => i === idx ? { ...r, added: true } : r))
-      toast.success('Lead añadido', 'El contacto ha sido añadido a tu lista de leads.')
+      toast.success('Lead añadido', 'Enriqueciendo con IA en segundo plano…')
+      if (json.data?.id) triggerEnrich(json.data.id, result.company_name)
     } else {
       const json = await res.json()
       toast.error('Error al añadir', json.error || 'Inténtalo de nuevo.')
@@ -187,7 +252,14 @@ export default function HunterPage() {
       ? `${json.inserted} añadidos · ${json.skipped} ya existían`
       : `${json.inserted} contactos añadidos al CRM`
     const extra = [campaignName && `campaña "${campaignName}"`, listName && `lista "${listName}"`].filter(Boolean).join(' · ')
-    toast.success(`${json.inserted} leads añadidos`, extra ? `${msg} — ${extra}` : msg)
+    toast.success(`${json.inserted} leads añadidos`, extra ? `${msg} — ${extra} · Enriqueciendo con IA…` : `${msg} · Enriqueciendo con IA…`)
+
+    // Auto-enriquecimiento de todos los leads insertados
+    if (json.ids?.length) {
+      json.ids.forEach((item: { id: string; company_name: string }) => {
+        triggerEnrich(item.id, item.company_name)
+      })
+    }
   }
 
   const newCount = results.filter(r => !r.already_exists && !r.added).length
@@ -195,15 +267,33 @@ export default function HunterPage() {
   return (
     <div className="animate-fade-in">
       <TopBar
-        title="Hunter.io — Emails"
-        subtitle="Busca los emails de cualquier empresa por su dominio web"
+        title="Lead Scout"
+        subtitle="Localiza contactos verificados de cualquier empresa por dominio web"
       />
+
+      {/* Banner de auto-enriquecimiento en curso */}
+      {enrichingLeads.length > 0 && (
+        <div className="flex items-center gap-3 px-5 py-3 text-sm bg-brand-50 border-b border-brand-100">
+          <Loader2 className="w-4 h-4 animate-spin text-brand-600 shrink-0" />
+          <div className="flex-1 min-w-0">
+            <span className="font-semibold text-brand-700">
+              Enriqueciendo {enrichingLeads.length} lead{enrichingLeads.length > 1 ? 's' : ''} con IA
+            </span>
+            <span className="ml-2 text-xs text-brand-500">
+              {enrichingLeads.map(l => l.name).join(', ')}
+            </span>
+          </div>
+          <div className="w-24 h-1 bg-brand-200 rounded-full overflow-hidden shrink-0">
+            <div className="h-full bg-brand-500 rounded-full" style={{ animation: 'progress-indeterminate 1.5s ease-in-out infinite', width: '40%' }} />
+          </div>
+        </div>
+      )}
 
       <div className="p-3 md:p-6 space-y-4 md:space-y-6">
         {/* Formulario */}
         <div className="card p-5">
           <div className="p-3 bg-brand-50 border border-brand-100 rounded-xl text-xs text-brand-700 mb-5">
-            Hunter.io indexa los emails públicos de empresas. Introduce el dominio web para encontrar contactos verificados.
+            Lead Scout escanea y verifica contactos públicos de cualquier empresa. Introduce el dominio web para obtener emails con score de confianza, combinando múltiples fuentes de datos.
           </div>
 
           <form onSubmit={handleSearch} className="space-y-4">
@@ -308,7 +398,7 @@ export default function HunterPage() {
         {loading && (
           <div className="card p-10 text-center">
             <Loader2 className="w-8 h-8 animate-spin text-brand-500 mx-auto mb-3" />
-            <p className="text-sm text-gray-500">Buscando en Hunter.io...</p>
+            <p className="text-sm text-gray-500">Lead Scout buscando contactos...</p>
           </div>
         )}
 
@@ -324,6 +414,46 @@ export default function HunterPage() {
             <Mail className="w-4 h-4 text-brand-500" />
             <span>Patrón de email detectado en <strong>{meta.organization}</strong>:</span>
             <code className="bg-white border border-gray-200 px-2 py-0.5 rounded text-brand-700 font-mono">{meta.pattern}@{meta.domain}</code>
+          </div>
+        )}
+
+        {/* Panel de capas de inteligencia */}
+        {(searched || loading) && (
+          <div className="card px-5 py-4">
+            <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 mb-3">Capas de inteligencia</p>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <ServicePill
+                label="Motor de dominio"
+                sublabel="Resolución de empresa"
+                state={loading ? 'loading' : !searched ? 'idle' : serviceStatus?.serp.used ? 'ok' : 'skipped'}
+                detail={serviceStatus?.serp.resolved ?? undefined}
+              />
+              <ServicePill
+                label="Verificación email"
+                sublabel="Emails corporativos"
+                state={loading ? 'loading' : !serviceStatus ? 'idle' : serviceStatus.hunter.count > 0 ? 'ok' : serviceStatus.hunter.searched ? 'empty' : 'skipped'}
+                detail={serviceStatus ? `${serviceStatus.hunter.count} contactos` : undefined}
+              />
+              <ServicePill
+                label="Perfiles profesionales"
+                sublabel="Cargo y departamento"
+                state={loading ? 'loading' : !serviceStatus ? 'idle' : serviceStatus.pdl.count > 0 ? 'ok' : serviceStatus.pdl.searched ? 'empty' : 'skipped'}
+                detail={serviceStatus?.pdl.searched ? `${serviceStatus.pdl.count} contactos` : 'en espera'}
+              />
+              <ServicePill
+                label="Base de datos B2B"
+                sublabel="Decisores y ejecutivos"
+                state={loading ? 'loading' : !serviceStatus ? 'idle' : serviceStatus.apollo.count > 0 ? 'ok' : serviceStatus.apollo.searched ? 'empty' : 'skipped'}
+                detail={serviceStatus?.apollo.searched ? `${serviceStatus.apollo.count} contactos` : 'en espera'}
+              />
+            </div>
+            {searched && !loading && !filteredByCountry && country && results.length > 0 && (
+              <p className="mt-3 text-[11px] text-amber-600 flex items-center gap-1.5">
+                <span>⚠️</span>
+                Dominio genérico (.com) — pueden aparecer contactos de otras delegaciones. Usa un dominio local para mayor precisión
+                {country === 'es' ? ' (ej: empresa.es)' : country === 'gb' ? ' (ej: empresa.co.uk)' : ''}.
+              </p>
+            )}
           </div>
         )}
 
@@ -383,11 +513,11 @@ export default function HunterPage() {
               </div>
             )}
 
-            <div className="divide-y divide-gray-50">
+            <div className="divide-y divide-gray-100">
               {results.map((result, idx) => (
                 <div
                   key={idx}
-                  className={`flex items-start gap-4 px-5 py-4 transition-colors ${result.already_exists ? 'bg-gray-50/50 opacity-60' : 'hover:bg-gray-50/30'}`}
+                  className={`flex items-start gap-4 px-5 py-4 transition-colors ${result.already_exists ? 'bg-indigo-50/20 opacity-60' : idx % 2 === 1 ? 'bg-indigo-50/30 hover:bg-indigo-50/60' : 'bg-white hover:bg-indigo-50/40'}`}
                 >
                   <div className="w-10 h-10 rounded-xl bg-brand-100 flex items-center justify-center shrink-0">
                     <User className="w-5 h-5 text-brand-600" />
@@ -413,6 +543,11 @@ export default function HunterPage() {
                       {result.added && (
                         <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full flex items-center gap-1">
                           <CheckCircle className="w-3 h-3" /> Añadido
+                        </span>
+                      )}
+                      {(result.source === 'pdl' || result.source === 'apollo') && (
+                        <span className="text-[10px] bg-indigo-50 text-indigo-600 border border-indigo-100 px-1.5 py-0.5 rounded-full uppercase tracking-wide font-semibold">
+                          {result.source === 'pdl' ? 'PDL' : 'Apollo'}
                         </span>
                       )}
                     </div>

@@ -7,36 +7,96 @@ import Image from 'next/image'
 import {
   LayoutDashboard, Megaphone, Users, Upload, Settings,
   ChevronLeft, ChevronRight, LogOut, Telescope, Kanban, AtSign, Wrench, UsersRound, BarChart2, Mail,
-  Menu, X, MoreHorizontal
+  Menu, X, MoreHorizontal, Brain,
 } from 'lucide-react'
 import { MadeBy } from '@/components/ui/MadeBy'
 import { createClient } from '@/lib/supabase/client'
 import { useRouter } from 'next/navigation'
 import { useState, useEffect } from 'react'
 
-const navItems = [
-  { href: '/dashboard',   label: 'Dashboard',        icon: LayoutDashboard },
-  { href: '/pipeline',    label: 'Pipeline',          icon: Kanban },
-  { href: '/campaigns',   label: 'Campañas',          icon: Megaphone },
-  { href: '/leads',       label: 'CRM / Leads',       icon: Users },
-  { href: '/discover',    label: 'Buscar email',      icon: Telescope },
-  { href: '/hunter',      label: 'Hunter — Emails',   icon: AtSign },
-  { href: '/tools',       label: 'Herramientas',      icon: Wrench },
-  { href: '/analytics',   label: 'Analíticas',        icon: BarChart2 },
-  { href: '/newsletters', label: 'Newsletters',       icon: Mail },
-  { href: '/imports',     label: 'Importar CSV',      icon: Upload },
-  { href: '/teams',       label: 'Equipo',            icon: UsersRound },
-  { href: '/settings',    label: 'Configuración',     icon: Settings },
+// ─── Nav sections ──────────────────────────────────────────────────────────────
+const navSections = [
+  {
+    label: 'Workspace',
+    items: [
+      { href: '/dashboard',  label: 'Dashboard',     icon: LayoutDashboard },
+      { href: '/pipeline',   label: 'Pipeline',      icon: Kanban          },
+      { href: '/campaigns',  label: 'Campañas',      icon: Megaphone       },
+      { href: '/leads',      label: 'CRM / Leads',   icon: Users           },
+      { href: '/teams',      label: 'Equipo',        icon: UsersRound      },
+    ],
+  },
+  {
+    label: 'Prospección',
+    items: [
+      { href: '/discover',   label: 'Buscar email',       icon: Telescope },
+      { href: '/hunter',     label: 'Lead Scout',         icon: AtSign    },
+      { href: '/imports',    label: 'Importar contactos', icon: Upload    },
+    ],
+  },
+  {
+    label: 'Outreach',
+    items: [
+      { href: '/newsletters', label: 'Newsletters',  icon: Mail     },
+      { href: '/tools',       label: 'Herramientas', icon: Wrench   },
+      { href: '/analytics',   label: 'Analíticas',   icon: BarChart2 },
+    ],
+  },
+  {
+    label: 'Sistema',
+    items: [
+      { href: '/sistema',  label: 'Inteligencia',  icon: Brain    },
+      { href: '/settings', label: 'Configuración', icon: Settings },
+    ],
+  },
 ]
 
 // Items que aparecen en la bottom nav móvil (los 5 más usados)
 const mobileBottomItems = [
-  { href: '/dashboard',   label: 'Inicio',   icon: LayoutDashboard },
-  { href: '/leads',       label: 'Leads',    icon: Users },
-  { href: '/campaigns',   label: 'Campañas', icon: Megaphone },
-  { href: '/pipeline',    label: 'Pipeline', icon: Kanban },
-  { href: '/analytics',   label: 'Stats',    icon: BarChart2 },
+  { href: '/dashboard',  label: 'Inicio',   icon: LayoutDashboard },
+  { href: '/leads',      label: 'Leads',    icon: Users           },
+  { href: '/campaigns',  label: 'Campañas', icon: Megaphone       },
+  { href: '/pipeline',   label: 'Pipeline', icon: Kanban          },
+  { href: '/analytics',  label: 'Stats',    icon: BarChart2       },
 ]
+
+// ─── NavItem component ─────────────────────────────────────────────────────────
+function NavItem({
+  href, label, icon: Icon, collapsed, pathname,
+}: { href: string; label: string; icon: React.ElementType; collapsed: boolean; pathname: string }) {
+  const isActive = pathname === href || pathname.startsWith(href + '/')
+  return (
+    <div className="relative">
+      {isActive && !collapsed && (
+        <span className="absolute left-0 top-[6px] bottom-[6px] w-[2px] rounded-full bg-brand-500" />
+      )}
+      <Link
+        href={href}
+        className={cn(isActive ? 'sidebar-link-active' : 'sidebar-link')}
+        style={isActive && !collapsed ? { paddingLeft: '14px' } : {}}
+        title={collapsed ? label : undefined}
+      >
+        <Icon className="w-4 h-4 shrink-0" />
+        {!collapsed && <span className="text-[12.5px]">{label}</span>}
+      </Link>
+    </div>
+  )
+}
+
+// ─── SectionLabel component ────────────────────────────────────────────────────
+function SectionLabel({ label, collapsed }: { label: string; collapsed: boolean }) {
+  if (collapsed) {
+    return <div className="h-px mx-2 my-2 bg-gray-100" />
+  }
+  return (
+    <div className="px-3 pt-4 pb-1.5 flex items-center gap-2">
+      <span className="text-[9px] font-semibold tracking-[0.14em] uppercase text-gray-400">
+        {label}
+      </span>
+      <div className="flex-1 h-px bg-gray-100" />
+    </div>
+  )
+}
 
 export default function Sidebar() {
   const pathname = usePathname()
@@ -97,16 +157,15 @@ export default function Sidebar() {
       </div>
 
       {/* Nav */}
-      <nav className="flex-1 px-2 py-4 space-y-0.5 overflow-y-auto">
-        {navItems.map(({ href, label, icon: Icon }) => {
-          const isActive = pathname === href || pathname.startsWith(href + '/')
-          return (
-            <Link key={href} href={href} className={cn(isActive ? 'sidebar-link-active' : 'sidebar-link')} title={collapsed ? label : undefined}>
-              <Icon className="w-4 h-4 shrink-0" />
-              {!collapsed && <span>{label}</span>}
-            </Link>
-          )
-        })}
+      <nav className="flex-1 px-2 py-2 overflow-y-auto">
+        {navSections.map((section, si) => (
+          <div key={si}>
+            <SectionLabel label={section.label} collapsed={collapsed} />
+            {section.items.map(({ href, label, icon }) => (
+              <NavItem key={href} href={href} label={label} icon={icon} collapsed={collapsed} pathname={pathname} />
+            ))}
+          </div>
+        ))}
       </nav>
 
       {/* User + logout */}
@@ -186,21 +245,30 @@ export default function Sidebar() {
         </div>
 
         {/* Nav */}
-        <nav className="flex-1 px-3 py-4 space-y-0.5 overflow-y-auto">
-          {navItems.map(({ href, label, icon: Icon }) => {
-            const isActive = pathname === href || pathname.startsWith(href + '/')
-            return (
-              <Link key={href} href={href} className={cn(
-                'flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-colors',
-                isActive
-                  ? 'bg-brand-50 text-brand-700'
-                  : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
-              )}>
-                <Icon className="w-5 h-5 shrink-0" />
-                <span>{label}</span>
-              </Link>
-            )
-          })}
+        <nav className="flex-1 px-2 py-2 overflow-y-auto">
+          {navSections.map((section, si) => (
+            <div key={si}>
+              <SectionLabel label={section.label} collapsed={false} />
+              {section.items.map(({ href, label, icon: Icon }) => {
+                const isActive = pathname === href || pathname.startsWith(href + '/')
+                return (
+                  <div key={href} className="relative">
+                    {isActive && (
+                      <span className="absolute left-0 top-[6px] bottom-[6px] w-[2px] rounded-full bg-brand-500" />
+                    )}
+                    <Link
+                      href={href}
+                      className={cn(isActive ? 'sidebar-link-active' : 'sidebar-link')}
+                      style={isActive ? { paddingLeft: '14px' } : {}}
+                    >
+                      <Icon className="w-4 h-4 shrink-0" />
+                      <span className="text-[13px]">{label}</span>
+                    </Link>
+                  </div>
+                )
+              })}
+            </div>
+          ))}
         </nav>
 
         {/* User + logout */}

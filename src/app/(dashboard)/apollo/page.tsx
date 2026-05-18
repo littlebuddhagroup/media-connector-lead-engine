@@ -226,7 +226,7 @@ export default function ApolloPage() {
   return (
     <div className="animate-fade-in">
       <TopBar
-        title="Apollo.io — Contactos"
+        title="Prospección B2B"
         subtitle="Encuentra directores de marketing y brand managers por sector"
         actions={
           newCount > 0 ? (
@@ -401,7 +401,7 @@ export default function ApolloPage() {
         {loading && (
           <div className="card p-10 text-center">
             <Loader2 className="w-8 h-8 animate-spin text-brand-500 mx-auto mb-3" />
-            <p className="text-sm text-gray-500">Buscando en Apollo.io...</p>
+            <p className="text-sm text-gray-500">Buscando contactos...</p>
             <p className="text-xs text-gray-400 mt-1">Esto puede tardar unos segundos</p>
           </div>
         )}

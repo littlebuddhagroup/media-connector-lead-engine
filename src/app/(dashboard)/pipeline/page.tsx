@@ -5,6 +5,7 @@ import TopBar from '@/components/layout/TopBar'
 import { Loader2, Mail, Star, GripVertical } from 'lucide-react'
 import { toast } from '@/components/ui/Toast'
 import Link from 'next/link'
+import CompanyLogo from '@/components/ui/CompanyLogo'
 
 // ============================================================
 // PIPELINE KANBAN — Gestión visual de estados de leads
@@ -75,13 +76,16 @@ function LeadCard({
         <div className="flex-1 min-w-0">
           {/* Header */}
           <div className="flex items-center justify-between gap-1 mb-1">
-            <Link
-              href={`/leads/${lead.id}`}
-              className="text-sm font-semibold text-gray-900 hover:text-brand-600 truncate transition-colors"
-              onClick={e => e.stopPropagation()}
-            >
-              {lead.company_name}
-            </Link>
+            <div className="flex items-center gap-2 min-w-0">
+              <CompanyLogo website={lead.website} companyName={lead.company_name} size={22} />
+              <Link
+                href={`/leads/${lead.id}`}
+                className="text-sm font-semibold text-gray-900 hover:text-brand-600 truncate transition-colors"
+                onClick={e => e.stopPropagation()}
+              >
+                {lead.company_name}
+              </Link>
+            </div>
             <div className="flex shrink-0">
               {Array.from({ length: stars }).map((_, i) => (
                 <Star key={i} className="w-3 h-3 text-amber-400 fill-amber-400" />

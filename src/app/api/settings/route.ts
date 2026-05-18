@@ -40,6 +40,12 @@ export async function PATCH(request: Request) {
   if (body.ai_provider !== undefined) v2Fields.ai_provider = body.ai_provider
   if (body.sender_email !== undefined) v2Fields.sender_email = body.sender_email
 
+  // Campos v3 — Notificaciones e Inteligencia (requieren notifications_and_intelligence.sql)
+  if (body.notification_emails    !== undefined) v2Fields.notification_emails    = body.notification_emails
+  if (body.briefing_enabled       !== undefined) v2Fields.briefing_enabled       = body.briefing_enabled
+  if (body.signal_alerts_enabled  !== undefined) v2Fields.signal_alerts_enabled  = body.signal_alerts_enabled
+  if (body.intelligence_modules   !== undefined) v2Fields.intelligence_modules   = body.intelligence_modules
+
   // Intentar guardado completo primero
   const { data, error } = await supabase
     .from('settings')

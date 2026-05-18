@@ -1153,9 +1153,9 @@ ${noActivity.map(r => personRow(r, '#fff')).join('')}
                           <th className="px-3 py-2.5" />
                         </tr>
                       </thead>
-                      <tbody className="divide-y divide-gray-50">
+                      <tbody className="divide-y divide-gray-100">
                         {leads.map(lead => (
-                          <tr key={lead.id} className={`hover:bg-gray-50 transition-colors ${selectedToRemove.has(lead.id) ? 'bg-red-50' : ''}`}>
+                          <tr key={lead.id} className={`transition-colors ${selectedToRemove.has(lead.id) ? 'bg-red-50' : 'odd:bg-white even:bg-indigo-50/30 hover:bg-indigo-50/60'}`}>
                             <td className="px-3 py-2.5">
                               <input
                                 type="checkbox"

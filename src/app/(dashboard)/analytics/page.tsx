@@ -211,11 +211,11 @@ function DrillDownPanel({ emails, emptyText, showRepliedAt, showClickedUrl }: {
             <th className="text-right px-4 py-2.5 text-xs font-medium text-gray-500">Aperturas</th>
           </tr>
         </thead>
-        <tbody className="divide-y divide-gray-50">
+        <tbody className="divide-y divide-gray-100">
           {emails.map(email => {
             const cfg = STATUS_CONFIG[email.status] ?? { label: email.status, className: 'bg-gray-100 text-gray-600' }
             return (
-              <tr key={email.id} className="hover:bg-gray-50/50">
+              <tr key={email.id} className="odd:bg-white even:bg-indigo-50/30 hover:bg-indigo-50/60 transition-colors">
                 <td className="px-5 py-2.5">
                   {email.lead_id ? (
                     <Link href={`/leads/${email.lead_id}`}
@@ -858,9 +858,9 @@ export default function AnalyticsPage() {
                         ))}
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-gray-50">
+                    <tbody className="divide-y divide-gray-100">
                       {sortedAccounts.map(row => (
-                        <tr key={row.account} className="hover:bg-gray-50">
+                        <tr key={row.account} className="odd:bg-white even:bg-indigo-50/30 hover:bg-indigo-50/60 transition-colors">
                           <td className="px-5 py-3 font-mono text-xs text-gray-700">{row.account}</td>
                           <td className="px-4 py-3 text-right text-gray-700">{row.sent}</td>
                           <td className="px-4 py-3 text-right text-gray-700">{row.opened}</td>
@@ -932,9 +932,9 @@ export default function AnalyticsPage() {
                         ))}
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-gray-50">
+                    <tbody className="divide-y divide-gray-100">
                       {sortedCampaigns.map((row, i) => (
-                        <tr key={i} className="hover:bg-gray-50">
+                        <tr key={i} className="odd:bg-white even:bg-indigo-50/30 hover:bg-indigo-50/60 transition-colors">
                           <td className="px-5 py-3 font-medium text-gray-900">{row.name}</td>
                           <td className="px-4 py-3 text-right text-gray-700">{row.sent}</td>
                           <td className="px-4 py-3 text-right text-gray-700">{row.opened}</td>

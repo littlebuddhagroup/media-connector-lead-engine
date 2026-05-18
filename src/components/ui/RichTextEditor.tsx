@@ -106,6 +106,7 @@ export default function RichTextEditor({
   const [videoLabel, setVideoLabel] = useState('▶ Ver vídeo')
 
   const editor = useEditor({
+    immediatelyRender: false,
     extensions: [
       StarterKit.configure({
         heading: false,

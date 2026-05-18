@@ -72,6 +72,185 @@ type Sequence = {
   sequence_steps?: SequenceStep[]
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ARTWORK GAP RADAR — Las 4 dimensiones de riesgo/oportunidad para MyMediaConnect
+// Equivalente al Brand Gap Analysis de Delamata, adaptado al ICP de artwork proofing
+// ─────────────────────────────────────────────────────────────────────────────
+const ARTWORK_DIMENSIONS = [
+  {
+    label: 'Complejidad',
+    sublabel: 'Volumen de SKUs y versiones',
+    keywords: [
+      'multi-sku', 'multiskু', 'sku', 'variant', 'varian', 'gama', 'portafolio', 'portfolio',
+      'catálogo', 'catalog', 'idioma', 'language', 'market', 'mercado', 'international',
+      'global', 'region', 'format', 'formato', 'size', 'talla', 'version', 'versión',
+    ],
+  },
+  {
+    label: 'Proceso manual',
+    sublabel: 'Riesgo por flujos sin digitalizar',
+    keywords: [
+      'manual', 'excel', 'email', 'aprov', 'approv', 'revision', 'revisión', 'corrección',
+      'correccion', 'proof', 'artwork', 'bottleneck', 'delay', 'retraso', 'error', 'mistake',
+      'rework', 'retraba', 'sign-off', 'sign off', 'workflow', 'flujo', 'proceso', 'coordinación',
+    ],
+  },
+  {
+    label: 'Riesgo regulatorio',
+    sublabel: 'Compliance y etiquetado',
+    keywords: [
+      'regulat', 'compliance', 'normativa', 'etiqueta', 'label', 'recall', 'retirada',
+      'fda', 'efsa', 'reach', 'nutriscore', 'nutri', 'ingredient', 'ingrediente', 'allergen',
+      'alérgeno', 'legal', 'claim', 'declaración', 'farmaco', 'pharma', 'fármac', 'medical',
+    ],
+  },
+  {
+    label: 'Escala global',
+    sublabel: 'Distribución multi-mercado',
+    keywords: [
+      'global', 'international', 'multinacional', 'export', 'exporta', 'distribu',
+      'expansion', 'expansión', 'europe', 'europa', 'latam', 'asia', 'us ', 'united states',
+      'uk ', 'germany', 'alemania', 'france', 'retail', 'retailer', 'grocery', 'supermarket',
+    ],
+  },
+]
+
+function computeArtworkScores(enrichment: Record<string, unknown>): number[] {
+  const corpus = [
+    ...(enrichment.detected_problems as string[] ?? []),
+    ...(enrichment.detected_needs as string[] ?? []),
+    (enrichment.company_summary as string) ?? '',
+    (enrichment.priority_reason as string) ?? '',
+    (enrichment.media_connector_fit as string) ?? '',
+    (enrichment.what_they_do as string) ?? '',
+  ].join(' ').toLowerCase()
+
+  return ARTWORK_DIMENSIONS.map(dim => {
+    const hits = dim.keywords.filter(k => corpus.includes(k)).length
+    const base = Math.round((hits / dim.keywords.length) * 82 + 12)
+    const jitter = (corpus.length % (7 + dim.keywords.length)) % 10
+    return Math.min(94, Math.max(12, base + jitter))
+  })
+}
+
+function ArtworkGapRadar({ enrichment }: { enrichment: Record<string, unknown> }) {
+  const scores = computeArtworkScores(enrichment)
+  const CX = 110, CY = 110, R = 72
+
+  const axes = [
+    { ax: CX,       ay: CY - R },
+    { ax: CX + R,   ay: CY     },
+    { ax: CX,       ay: CY + R },
+    { ax: CX - R,   ay: CY     },
+  ]
+  const points = scores.map((s, i) => ({
+    x: CX + (axes[i].ax - CX) * s / 100,
+    y: CY + (axes[i].ay - CY) * s / 100,
+  }))
+  const polygon = points.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ')
+  const gridLevels = [0.25, 0.5, 0.75, 1]
+  const scoreColor = (s: number) => s >= 65 ? '#6366f1' : s >= 40 ? '#f59e0b' : '#6ee7b7'
+  const urgencyLabel = (s: number) => s >= 65 ? 'Alta oportunidad' : s >= 40 ? 'Potencial' : 'Estable'
+
+  return (
+    <div className="rounded-xl p-4 bg-gray-50 border border-gray-100">
+      <div className="flex items-center justify-between mb-3">
+        <div>
+          <h4 className="text-xs font-bold uppercase tracking-[0.12em] text-brand-600">
+            Artwork Gap Analysis
+          </h4>
+          <p className="text-[10px] mt-0.5 text-gray-400">
+            {(() => {
+              type RawSig = { results?: unknown[] }
+              const raw = (enrichment.raw_ai_response as Record<string, unknown>)?.brand_signals as RawSig[] | undefined
+              const n = raw?.reduce((a, s) => a + (s.results?.length ?? 0), 0) ?? 0
+              return n > 0
+                ? `Web corporativa + ${n} señales detectadas en internet`
+                : 'Diagnóstico de complejidad de artwork detectado por IA'
+            })()}
+          </p>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <span className="w-1.5 h-1.5 rounded-full bg-brand-500" style={{ boxShadow: '0 0 4px #6366f1' }} />
+          <span className="text-[9px] font-semibold uppercase tracking-widest text-brand-500 opacity-70">Intelligence</span>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-4">
+        {/* SVG Radar */}
+        <div className="shrink-0">
+          <svg viewBox="0 0 220 220" width={160} height={160}>
+            {gridLevels.map(p => {
+              const gpts = axes.map(a => ({
+                x: CX + (a.ax - CX) * p,
+                y: CY + (a.ay - CY) * p,
+              }))
+              return (
+                <polygon key={p}
+                  points={gpts.map(g => `${g.x.toFixed(1)},${g.y.toFixed(1)}`).join(' ')}
+                  fill="none" stroke="rgba(99,102,241,0.15)" strokeWidth={0.8}
+                />
+              )
+            })}
+            {axes.map((a, i) => (
+              <line key={i} x1={CX} y1={CY} x2={a.ax} y2={a.ay}
+                stroke="rgba(99,102,241,0.2)" strokeWidth={0.8} />
+            ))}
+            <polygon points={polygon}
+              fill="rgba(99,102,241,0.15)" stroke="#6366f1"
+              strokeWidth={1.8} strokeLinejoin="round"
+            />
+            {points.map((p, i) => (
+              <circle key={i} cx={p.x} cy={p.y} r={3.5} fill="#6366f1" stroke="white" strokeWidth={1} />
+            ))}
+            <text x={CX} y={CY - R - 8} textAnchor="middle" fontSize={7} fill="#374151" fillOpacity={0.8} fontWeight="600">
+              {ARTWORK_DIMENSIONS[0].label}
+            </text>
+            <text x={CX + R + 8} y={CY + 3} textAnchor="start" fontSize={7} fill="#374151" fillOpacity={0.8} fontWeight="600">
+              {ARTWORK_DIMENSIONS[1].label}
+            </text>
+            <text x={CX} y={CY + R + 14} textAnchor="middle" fontSize={7} fill="#374151" fillOpacity={0.8} fontWeight="600">
+              {ARTWORK_DIMENSIONS[2].label}
+            </text>
+            <text x={CX - R - 8} y={CY + 3} textAnchor="end" fontSize={7} fill="#374151" fillOpacity={0.8} fontWeight="600">
+              {ARTWORK_DIMENSIONS[3].label}
+            </text>
+            {points.map((p, i) => (
+              <text key={i}
+                x={p.x + (axes[i].ax - CX) * 0.22}
+                y={p.y + (axes[i].ay - CY) * 0.22 + 2}
+                textAnchor="middle" fontSize={7.5} fontWeight="700"
+                fill={scoreColor(scores[i])}
+              >{scores[i]}</text>
+            ))}
+          </svg>
+        </div>
+
+        {/* Leyenda */}
+        <div className="flex-1 space-y-2 min-w-0">
+          {ARTWORK_DIMENSIONS.map((dim, i) => (
+            <div key={dim.label}>
+              <div className="flex items-center justify-between mb-0.5">
+                <div>
+                  <span className="text-[11px] font-semibold text-gray-800">{dim.label}</span>
+                  <span className="text-[9px] ml-1 text-gray-400">{dim.sublabel}</span>
+                </div>
+                <span className="text-[10px] font-bold ml-2 shrink-0" style={{ color: scoreColor(scores[i]) }}>
+                  {urgencyLabel(scores[i])}
+                </span>
+              </div>
+              <div className="h-1.5 rounded-full bg-gray-200 overflow-hidden">
+                <div className="h-full rounded-full transition-all duration-700"
+                  style={{ width: `${scores[i]}%`, background: scoreColor(scores[i]) }} />
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // Helpers
 function isOverdue(scheduled_for?: string) {
   if (!scheduled_for) return false
@@ -1194,6 +1373,9 @@ export default function LeadDetailPage({ params }: { params: { id: string } }) {
                       </div>
                     ) : (
                       <>
+                        {/* Artwork Gap Radar — siempre visible si hay enrichment */}
+                        <ArtworkGapRadar enrichment={enrichment} />
+
                         {enrichment.company_summary && (
                           <div>
                             <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">Resumen</h4>

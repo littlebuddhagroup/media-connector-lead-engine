@@ -1075,11 +1075,11 @@ export default function NewslettersPage() {
                         <th className="text-left px-4 py-2.5 font-semibold text-gray-600 hidden lg:table-cell">Enviado</th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-gray-50">
+                    <tbody className="divide-y divide-gray-100">
                       {filtered.map(r => {
                         const st = RECIPIENT_STATUS[r.status] ?? RECIPIENT_STATUS.pending
                         return (
-                          <tr key={r.id} className="hover:bg-gray-50/50 transition-colors">
+                          <tr key={r.id} className="odd:bg-white even:bg-indigo-50/30 hover:bg-indigo-50/60 transition-colors">
                             <td className="px-4 py-3">
                               <p className="font-medium text-gray-800">{r.email}</p>
                               {r.name && <p className="text-gray-400 mt-0.5">{r.name}</p>}

@@ -78,7 +78,7 @@ export default function DiscoverPage() {
     setLoading(false)
 
     if (!res.ok) { setError(json.error || 'Error en la búsqueda'); return }
-    setResults(json.data ?? [])
+    setResults((json.data ?? []).filter((r: DiscoverResult) => r.email))
   }
 
   const handleAdd = async (result: DiscoverResult, idx: number) => {
@@ -187,14 +187,14 @@ export default function DiscoverPage() {
           </form>
         </div>
 
-        {/* Info sobre Hunter.io */}
+        {/* Info sobre búsqueda de emails */}
         {!searched && (
           <div className="p-4 bg-brand-50 border border-brand-100 rounded-xl flex items-start gap-3 text-sm text-brand-800">
             <Mail className="w-4 h-4 shrink-0 mt-0.5 text-brand-600" />
             <div>
               <p className="font-medium mb-0.5">Búsqueda de emails automática</p>
               <p className="text-xs text-brand-700">
-                Para cada empresa encontrada, el sistema intenta localizar automáticamente un email de contacto usando Hunter.io.
+                Para cada empresa encontrada, el sistema localiza automáticamente un email de contacto verificado.
                 Los resultados con email aparecen marcados en verde.
               </p>
             </div>
