@@ -5,9 +5,9 @@ export const metadata: Metadata = {
   title: 'Media Connector Lead Engine',
   description: 'Generación, análisis y seguimiento de leads para Media Connector',
   icons: {
-    icon: '/logo.png',
-    shortcut: '/logo.png',
-    apple: '/logo.png',
+    icon: '/logo2.png',
+    shortcut: '/logo2.png',
+    apple: '/logo2.png',
   },
   viewport: {
     width: 'device-width',

@@ -4,51 +4,85 @@ import { createAdminClient } from '@/lib/supabase/server'
 import { generateMessage, enrichLeadWithAI } from '@/services/aiService'
 import { getUserAISettings } from '@/lib/getUserAIProvider'
 
-// ─── Asuntos de fallback por idioma ──────────────────────────────────────────
-function getDefaultSubjects(language: string, companyName: string) {
-  const subjects: Record<string, [string, string, string]> = {
+// ─── Asuntos de fallback por idioma (3 toques) ───────────────────────────────
+function getDefaultSubjects(language: string, companyName: string): string[] {
+  const subjects: Record<string, string[]> = {
     es: [
       `Presentación MyMediaConnect para ${companyName}`,
       '¿Has tenido ocasión de revisar mi mensaje?',
       `Último intento — ¿Te interesa el tema?`,
+      `Una idea concreta para ${companyName}`,
+      `Cerramos el hilo — ¿te interesa o lo dejamos aquí?`,
     ],
     en: [
       `MyMediaConnect introduction for ${companyName}`,
       'Have you had a chance to look at my message?',
       `Last attempt — interested in the topic?`,
+      `A specific idea for ${companyName}`,
+      `Closing the loop — shall we connect or leave it here?`,
     ],
     fr: [
       `Présentation MyMediaConnect pour ${companyName}`,
       'Avez-vous eu l\'occasion de lire mon message ?',
       `Dernière tentative — le sujet vous intéresse ?`,
+      `Une idée concrète pour ${companyName}`,
+      `On referme le sujet — intéressé ou on s'arrête là ?`,
     ],
     de: [
       `MyMediaConnect Präsentation für ${companyName}`,
       'Hatten Sie Gelegenheit, meine Nachricht zu lesen?',
       `Letzter Versuch — interessiert Sie das Thema?`,
+      `Eine konkrete Idee für ${companyName}`,
+      `Abschlussfrage — interessiert oder soll ich aufhören?`,
     ],
     it: [
       `Presentazione MyMediaConnect per ${companyName}`,
       'Ha avuto modo di leggere il mio messaggio?',
       `Ultimo tentativo — l'argomento ti interessa?`,
+      `Un'idea concreta per ${companyName}`,
+      `Chiudiamo il cerchio — sei interessato o ci fermiamo qui?`,
     ],
     pt: [
       `Apresentação MyMediaConnect para ${companyName}`,
       'Teve oportunidade de ver a minha mensagem?',
       `Última tentativa — tem interesse no assunto?`,
+      `Uma ideia concreta para ${companyName}`,
+      `Fechando o assunto — tem interesse ou paramos por aqui?`,
     ],
     nl: [
       `MyMediaConnect introductie voor ${companyName}`,
       'Heeft u de kans gehad mijn bericht te lezen?',
       `Laatste poging — bent u geïnteresseerd in het onderwerp?`,
+      `Een concreet idee voor ${companyName}`,
+      `Afsluiting — geïnteresseerd of stoppen we hier?`,
     ],
     ca: [
       `Presentació MyMediaConnect per ${companyName}`,
       'Has tingut ocasió de llegir el meu missatge?',
       `Últim intent — t'interessa el tema?`,
+      `Una idea concreta per a ${companyName}`,
+      `Tanquem el fil — t'interessa o ho deixem aquí?`,
     ],
   }
   return subjects[language] ?? subjects['es']
+}
+
+// Delays en días para cada step (3 o 5 toques)
+const STEP_DELAYS: Record<number, number[]> = {
+  3: [0, 5, 10],
+  5: [0, 4, 8, 13, 18],
+}
+
+// Tonos por step (3 o 5 toques)
+const STEP_TONES: Record<number, string[]> = {
+  3: ['consultivo', 'directo', 'cercano'],
+  5: ['consultivo', 'directo', 'cercano', 'formal', 'directo'],
+}
+
+// Tipos de mensaje por step (3 o 5 toques)
+const STEP_TYPES: Record<number, string[]> = {
+  3: ['initial_email', 'followup_1', 'followup_2'],
+  5: ['initial_email', 'followup_1', 'followup_2', 'followup_1', 'followup_2'],
 }
 
 // ============================================================
@@ -100,9 +134,12 @@ export async function POST(request: Request) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'No autenticado' }, { status: 401 })
 
-  const { lead_id, campaign_id, custom_steps, from_email, language = 'es' } = await request.json()
+  const { lead_id, campaign_id, custom_steps, from_email, language = 'es', total_steps = 3 } = await request.json()
 
   if (!lead_id) return NextResponse.json({ error: 'lead_id requerido' }, { status: 400 })
+
+  // Normalizar total_steps: solo se permiten 3 o 5
+  const numSteps: 3 | 5 = total_steps === 5 ? 5 : 3
 
   // Verificar que no hay secuencia activa para este lead
   const { data: existing } = await supabase
@@ -126,22 +163,20 @@ export async function POST(request: Request) {
 
   if (!lead) return NextResponse.json({ error: 'Lead no encontrado' }, { status: 404 })
 
-  // Generar los 3 emails con IA (o usar custom_steps si se pasan)
+  // Generar emails con IA (o usar custom_steps si se pasan)
   let steps: Array<{ step_number: number; subject: string; body: string; delay_days: number }>
 
-  if (custom_steps?.length >= 3) {
+  if (custom_steps?.length >= numSteps) {
     steps = custom_steps
   } else {
     try {
       const { provider: aiProvider, model: aiModel } = await getUserAISettings(supabase, user.id)
       let enrichment = Array.isArray(lead.enrichment) ? lead.enrichment[0] : lead.enrichment
 
-      // Si el lead no tiene enrichment, enriquecerlo ahora para que los emails
-      // tengan el mismo contexto y calidad que los generados desde la ficha del lead
+      // Auto-enriquecer si el lead no tiene datos de contexto
       if (!enrichment) {
         try {
           enrichment = await enrichLeadWithAI(lead, undefined, aiProvider, aiModel)
-          // Guardar el enrichment para uso futuro
           const adminSb = createAdminClient()
           await adminSb.from('lead_enrichments').upsert({
             lead_id,
@@ -150,23 +185,28 @@ export async function POST(request: Request) {
           }, { onConflict: 'lead_id' })
           await adminSb.from('leads').update({ is_enriched: true }).eq('id', lead_id)
         } catch {
-          // Si falla el enriquecimiento, continuamos sin él (mejor un email que nada)
           enrichment = null
         }
       }
 
-      const [email1, email2, email3] = await Promise.all([
-        generateMessage(lead, enrichment, 'initial_email', 'consultivo', undefined, false, language, aiProvider, aiModel),
-        generateMessage(lead, enrichment, 'followup_1', 'directo', undefined, false, language, aiProvider, aiModel),
-        generateMessage(lead, enrichment, 'followup_2', 'cercano', undefined, false, language, aiProvider, aiModel),
-      ])
+      const delays = STEP_DELAYS[numSteps]
+      const tones = STEP_TONES[numSteps]
+      const types = STEP_TYPES[numSteps]
+
+      // Generar todos los emails en paralelo
+      const emails = await Promise.all(
+        Array.from({ length: numSteps }, (_, i) =>
+          generateMessage(lead, enrichment, types[i] as Parameters<typeof generateMessage>[2], tones[i] as Parameters<typeof generateMessage>[3], undefined, false, language, aiProvider, aiModel)
+        )
+      )
 
       const fallback = getDefaultSubjects(language, lead.company_name)
-      steps = [
-        { step_number: 1, subject: email1.subject ?? fallback[0], body: email1.body, delay_days: 0 },
-        { step_number: 2, subject: email2.subject ?? fallback[1], body: email2.body, delay_days: 5 },
-        { step_number: 3, subject: email3.subject ?? fallback[2], body: email3.body, delay_days: 10 },
-      ]
+      steps = emails.map((email, i) => ({
+        step_number: i + 1,
+        subject: email.subject ?? fallback[i] ?? `Follow-up ${i + 1} — ${lead.company_name}`,
+        body: email.body,
+        delay_days: delays[i],
+      }))
     } catch (err) {
       return NextResponse.json({ error: 'Error generando mensajes con IA: ' + (err instanceof Error ? err.message : 'Unknown') }, { status: 500 })
     }
@@ -179,9 +219,10 @@ export async function POST(request: Request) {
       user_id: user.id,
       campaign_id: campaign_id ?? lead.campaign_id ?? null,
       lead_id,
-      name: `Secuencia 3 toques — ${lead.company_name}`,
+      name: `Secuencia ${numSteps} toques — ${lead.company_name}`,
       status: 'active',
       current_step: 0,
+      total_steps: numSteps,
     })
     .select()
     .single()
@@ -191,7 +232,6 @@ export async function POST(request: Request) {
   // Crear los pasos — las fechas vienen de custom_steps.scheduled_for o se calculan por defecto
   const baseDate = new Date()
   const stepsToInsert = steps.map(step => {
-    // Si el cliente envía scheduled_for explícito (desde la UI de revisión) lo usamos directamente
     const explicitDate = (step as { scheduled_for?: string }).scheduled_for
     let scheduledFor: Date
     if (explicitDate) {
@@ -223,8 +263,8 @@ export async function POST(request: Request) {
     user_id: user.id,
     campaign_id: campaign_id ?? lead.campaign_id ?? null,
     type: 'email_sent',
-    title: `Secuencia de 3 emails activada`,
-    description: `Emails programados para envío automático vía cron`,
+    title: `Secuencia de ${numSteps} emails activada`,
+    description: `${numSteps} emails programados para envío automático vía cron`,
   })
 
   return NextResponse.json({ data: sequence }, { status: 201 })
@@ -267,7 +307,7 @@ export async function PATCH(request: Request) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'No autenticado' }, { status: 401 })
 
-  const { sequence_id, action, language = 'es' } = await request.json() // action: 'pause' | 'cancel' | 'resume' | 'restart'
+  const { sequence_id, action, language = 'es', total_steps } = await request.json() // action: 'pause' | 'cancel' | 'resume' | 'restart'
   if (!sequence_id || !action) return NextResponse.json({ error: 'sequence_id y action requeridos' }, { status: 400 })
 
   // ─── Acción especial: restart ────────────────────────────────────────────────
@@ -275,12 +315,15 @@ export async function PATCH(request: Request) {
     // 1. Obtener la secuencia actual
     const { data: seq } = await supabase
       .from('sequences')
-      .select('id, lead_id, campaign_id, user_id')
+      .select('id, lead_id, campaign_id, user_id, total_steps')
       .eq('id', sequence_id)
       .eq('user_id', user.id)
       .single()
 
     if (!seq) return NextResponse.json({ error: 'Secuencia no encontrada' }, { status: 404 })
+
+    // Respetar el total_steps original o el nuevo si se pasa explícitamente
+    const numSteps: 3 | 5 = (total_steps === 5 || seq.total_steps === 5) ? 5 : 3
 
     // 2. Cancelar la secuencia actual y marcar sus pasos como skipped
     await supabase.from('sequences').update({
@@ -302,13 +345,12 @@ export async function PATCH(request: Request) {
 
     if (!lead) return NextResponse.json({ error: 'Lead no encontrado' }, { status: 404 })
 
-    // 4. Generar 3 nuevos emails con IA
+    // 4. Generar emails con IA
     const { provider: aiProvider, model: aiModel } = await getUserAISettings(supabase, user.id)
     let steps: Array<{ step_number: number; subject: string; body: string; delay_days: number }>
     try {
       let enrichment = Array.isArray(lead.enrichment) ? lead.enrichment[0] : lead.enrichment
 
-      // Auto-enriquecer si no tiene datos de contexto
       if (!enrichment) {
         try {
           enrichment = await enrichLeadWithAI(lead, undefined, aiProvider, aiModel)
@@ -324,17 +366,23 @@ export async function PATCH(request: Request) {
         }
       }
 
-      const [email1, email2, email3] = await Promise.all([
-        generateMessage(lead, enrichment, 'initial_email', 'consultivo', undefined, false, language, aiProvider, aiModel),
-        generateMessage(lead, enrichment, 'followup_1', 'directo', undefined, false, language, aiProvider, aiModel),
-        generateMessage(lead, enrichment, 'followup_2', 'cercano', undefined, false, language, aiProvider, aiModel),
-      ])
+      const delays = STEP_DELAYS[numSteps]
+      const tones = STEP_TONES[numSteps]
+      const types = STEP_TYPES[numSteps]
+
+      const emails = await Promise.all(
+        Array.from({ length: numSteps }, (_, i) =>
+          generateMessage(lead, enrichment, types[i] as Parameters<typeof generateMessage>[2], tones[i] as Parameters<typeof generateMessage>[3], undefined, false, language, aiProvider, aiModel)
+        )
+      )
+
       const fallback = getDefaultSubjects(language, lead.company_name)
-      steps = [
-        { step_number: 1, subject: email1.subject ?? fallback[0], body: email1.body, delay_days: 0 },
-        { step_number: 2, subject: email2.subject ?? fallback[1], body: email2.body, delay_days: 5 },
-        { step_number: 3, subject: email3.subject ?? fallback[2], body: email3.body, delay_days: 10 },
-      ]
+      steps = emails.map((email, i) => ({
+        step_number: i + 1,
+        subject: email.subject ?? fallback[i] ?? `Follow-up ${i + 1} — ${lead.company_name}`,
+        body: email.body,
+        delay_days: delays[i],
+      }))
     } catch (err) {
       return NextResponse.json({ error: 'Error regenerando mensajes con IA: ' + (err instanceof Error ? err.message : 'Unknown') }, { status: 500 })
     }
@@ -346,9 +394,10 @@ export async function PATCH(request: Request) {
         user_id: user.id,
         lead_id: seq.lead_id,
         campaign_id: seq.campaign_id ?? null,
-        name: `Secuencia 3 toques — ${lead.company_name}`,
+        name: `Secuencia ${numSteps} toques — ${lead.company_name}`,
         status: 'active',
         current_step: 0,
+        total_steps: numSteps,
       })
       .select()
       .single()
@@ -381,8 +430,8 @@ export async function PATCH(request: Request) {
       user_id: user.id,
       campaign_id: seq.campaign_id ?? null,
       type: 'email_sent',
-      title: 'Secuencia de 3 emails reiniciada',
-      description: 'Se regeneraron los 3 emails y se reprogramaron las fechas de envío',
+      title: `Secuencia de ${numSteps} emails reiniciada`,
+      description: `Se regeneraron los ${numSteps} emails y se reprogramaron las fechas de envío`,
     })
 
     return NextResponse.json({ data: newSeq })

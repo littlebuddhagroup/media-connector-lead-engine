@@ -1,57 +1,146 @@
 import { createAdminClient } from '@/lib/supabase/server'
 import { enrichLeadWithAI } from './aiService'
-import { scrapeWebContent, findEmailWithHunter } from './scrapingService'
+import { scrapeWebContent, findEmailWithHunter, searchArtworkSignals } from './scrapingService'
 import { runConcurrently } from '@/lib/concurrency'
+import { LushaClient } from './lushaService'
 import type { Lead } from '@/types'
 
 // ============================================================
-// ENRICHMENT SERVICE — Orquesta scraping + AI + guardado
+// ENRICHMENT SERVICE — Orquesta scraping + Lusha + Hunter + AI + guardado
+//
+// FLUJO EN CADENA (todo suma, nada se sustituye):
+//   1. Lusha  → email, teléfono, LinkedIn (si está conectado)
+//   2. Web scraping (SerpAPI)  → contenido del sitio web
+//   3. Hunter.io → email verificado (solo si Lusha no lo encontró)
+//   4. SerpAPI artwork signals → señales de compra activas
+//   5. IA (Gemini/Groq) → análisis completo + score
 // ============================================================
 
 export async function enrichLead(leadId: string, userId: string) {
   const supabase = createAdminClient()
 
-  // 1. Obtener el lead (columnas necesarias para enriquecimiento + contexto IA)
+  // 1. Obtener el lead
   const { data: lead, error: leadError } = await supabase
     .from('leads')
-    .select('id, company_name, website, domain, email, campaign_id, sector, country, description, first_name, last_name, department')
+    .select('id, company_name, website, domain, email, phone, linkedin_url, campaign_id, sector, country, description, first_name, last_name, department')
     .eq('id', leadId)
     .eq('user_id', userId)
     .single()
 
   if (leadError || !lead) throw new Error('Lead no encontrado')
 
-  // 1b. Leer configuración de IA del usuario (proveedor + modelo)
-  const { data: userSettings } = await supabase
-    .from('settings')
-    .select('ai_provider, ai_model')
-    .eq('user_id', userId)
-    .single()
+  // 1b. Leer configuración del usuario: IA + API keys
+  const [{ data: userSettings }, { data: lushaIntegration }] = await Promise.all([
+    supabase
+      .from('settings')
+      .select('ai_provider, ai_model')
+      .eq('user_id', userId)
+      .single(),
+    supabase
+      .from('api_integrations')
+      .select('api_key')
+      .eq('user_id', userId)
+      .eq('provider', 'lusha')
+      .single(),
+  ])
+
   const aiProvider = (userSettings?.ai_provider as string) ?? 'gemini'
   const aiModel = (userSettings?.ai_model as string) ?? 'gemini-2.5-flash'
+  const lushaApiKey = lushaIntegration?.api_key as string | undefined
 
-  // 2. Scraping de la web + búsqueda Hunter en paralelo (si aplican)
-  const [scrapedResult, hunterResult] = await Promise.all([
+  // ─────────────────────────────────────────────────────────
+  // PASO 1 — LUSHA: busca email, teléfono y LinkedIn si está conectado
+  //   - Solo actúa sobre campos vacíos (no sobreescribe)
+  //   - Si encuentra email, marcamos lushaFoundEmail=true para no llamar a Hunter
+  // ─────────────────────────────────────────────────────────
+  const lushaUpdates: Record<string, string> = {}
+  let lushaFoundEmail = false
+
+  if (lushaApiKey && (lead.first_name || lead.last_name)) {
+    try {
+      const lushaClient = new LushaClient(lushaApiKey)
+      const lushaResult = await lushaClient.enrichPerson({
+        firstName: lead.first_name ?? undefined,
+        lastName: lead.last_name ?? undefined,
+        company: lead.company_name ?? undefined,
+        linkedinUrl: lead.linkedin_url ?? undefined,
+      })
+
+      if (lushaResult.found) {
+        if (!lead.email && lushaResult.email) {
+          lushaUpdates.email = lushaResult.email
+          lushaFoundEmail = true
+        }
+        if (!lead.phone && lushaResult.phone) {
+          lushaUpdates.phone = lushaResult.phone
+        }
+        if (!lead.linkedin_url && lushaResult.linkedin) {
+          lushaUpdates.linkedin_url = lushaResult.linkedin
+        }
+
+        // Guardar datos de Lusha en el lead inmediatamente para que la IA los use
+        if (Object.keys(lushaUpdates).length > 0) {
+          await supabase
+            .from('leads')
+            .update({ ...lushaUpdates, updated_at: new Date().toISOString() })
+            .eq('id', leadId)
+
+          // Reflejar los cambios en el objeto lead para los pasos siguientes
+          Object.assign(lead, lushaUpdates)
+        }
+      }
+    } catch (e) {
+      console.warn('Lusha enrichment failed (non-blocking):', e)
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────
+  // PASO 2+3+4 — Web Scraping + Hunter (si no email ya) + Artwork Signals
+  //   Todo en paralelo para maximizar velocidad
+  // ─────────────────────────────────────────────────────────
+  const [scrapedResult, hunterResult, artworkSignals] = await Promise.all([
+    // Web scraping del sitio
     lead.website
       ? scrapeWebContent(lead.website).catch(e => {
           console.warn(`Scraping failed for ${lead.website}:`, e)
           return null
         })
       : Promise.resolve(null),
-    !lead.email && lead.domain
+
+    // Hunter.io solo si aún no tenemos email (ni original ni de Lusha)
+    !lead.email && !lushaFoundEmail && lead.domain
       ? findEmailWithHunter(lead.domain).catch(() => null)
       : Promise.resolve(null),
+
+    // SerpAPI: 3 búsquedas de señales de artwork/packaging
+    searchArtworkSignals(
+      lead.company_name,
+      lead.domain ?? undefined,
+      lead.country ?? 'es'
+    ).catch(e => {
+      console.warn(`Artwork signal search failed for ${lead.company_name}:`, e)
+      return []
+    }),
   ])
 
   const scrapedContent = scrapedResult?.content
   const scrapedTitle = scrapedResult?.title
   const scrapedDescription = scrapedResult?.description
-  const emailFound = hunterResult?.email
+  const emailFound = hunterResult?.email  // solo si Hunter lo encontró (Lusha no lo había)
 
-  // 3. Análisis IA — usando proveedor y modelo del usuario
-  const aiResult = await enrichLeadWithAI(lead as Lead, scrapedContent, aiProvider, aiModel)
+  // ─────────────────────────────────────────────────────────
+  // PASO 5 — IA (Gemini o Groq): análisis completo de la empresa
+  //   Recibe el lead ya actualizado con datos de Lusha/Hunter
+  // ─────────────────────────────────────────────────────────
+  const leadForAI: Lead = {
+    ...lead as unknown as Lead,
+    email: lead.email ?? emailFound ?? undefined,
+  }
+  const aiResult = await enrichLeadWithAI(leadForAI, scrapedContent, aiProvider, aiModel)
 
-  // 4. Upsert del enrichment (una sola query en vez de select+branch)
+  // ─────────────────────────────────────────────────────────
+  // PASO 6 — Guardar enrichment en BD
+  // ─────────────────────────────────────────────────────────
   const enrichmentData = {
     lead_id: leadId,
     user_id: userId,
@@ -66,14 +155,21 @@ export async function enrichLead(leadId: string, userId: string) {
     scraped_title: scrapedTitle,
     scraped_description: scrapedDescription,
     scraped_content: scrapedContent?.slice(0, 2000),
-    raw_ai_response: aiResult,
+    raw_ai_response: {
+      ...aiResult,
+      brand_signals: artworkSignals,
+      // Trazabilidad: qué fuentes aportaron datos de contacto
+      contact_sources: {
+        email: lead.email ? 'original' : lushaFoundEmail ? 'lusha' : emailFound ? 'hunter' : null,
+        phone: lushaUpdates.phone ? 'lusha' : null,
+        linkedin: lushaUpdates.linkedin_url ? 'lusha' : null,
+      },
+    },
     model_used: aiProvider === 'groq'
       ? (process.env.GROQ_MODEL ?? 'llama-3.3-70b-versatile')
       : aiModel,
   }
 
-  // Upsert con fallback: primero intentamos upsert (requiere UNIQUE constraint en lead_id,
-  // ver migración 002_feature_updates.sql). Si falla, hacemos delete+insert como fallback.
   let enrichment: Record<string, unknown> | null = null
   const { data: upsertData, error: enrichError } = await supabase
     .from('lead_enrichments')
@@ -82,7 +178,6 @@ export async function enrichLead(leadId: string, userId: string) {
     .single()
 
   if (enrichError) {
-    // Fallback: borrar fila existente e insertar nueva
     console.warn('Upsert failed, trying delete+insert fallback:', enrichError.message)
     await supabase.from('lead_enrichments').delete().eq('lead_id', leadId)
     const { data: insertData, error: insertError } = await supabase
@@ -96,7 +191,9 @@ export async function enrichLead(leadId: string, userId: string) {
     enrichment = upsertData
   }
 
-  // 5. Actualizar lead + activity log en paralelo
+  // ─────────────────────────────────────────────────────────
+  // PASO 7 — Actualizar lead + activity log en paralelo
+  // ─────────────────────────────────────────────────────────
   const priority = aiResult.fit_score >= 70 ? 'high' : aiResult.fit_score >= 40 ? 'medium' : 'low'
   const updateData: Record<string, unknown> = {
     score: aiResult.fit_score,
@@ -106,7 +203,16 @@ export async function enrichLead(leadId: string, userId: string) {
     status: 'enriched',
     tags: aiResult.auto_tags,
   }
-  if (emailFound) updateData.email = emailFound
+  // Email de Hunter (Lusha ya se guardó en el paso 1)
+  if (emailFound && !lead.email) updateData.email = emailFound
+
+  // Descripción del log con trazabilidad de fuentes
+  const contactSources: string[] = []
+  if (lushaFoundEmail) contactSources.push('email vía Lusha')
+  else if (emailFound) contactSources.push('email vía Hunter')
+  if (lushaUpdates.phone) contactSources.push('teléfono vía Lusha')
+  if (lushaUpdates.linkedin_url) contactSources.push('LinkedIn vía Lusha')
+  const sourcesNote = contactSources.length ? ` | Contacto: ${contactSources.join(', ')}` : ''
 
   await Promise.all([
     supabase.from('leads').update(updateData).eq('id', leadId),
@@ -115,16 +221,18 @@ export async function enrichLead(leadId: string, userId: string) {
       user_id: userId,
       campaign_id: lead.campaign_id,
       type: 'enriched',
-      title: 'Lead enriquecido con IA',
-      description: `Score: ${aiResult.fit_score}/100 | Prioridad: ${priority}`,
-      metadata: { fit_score: aiResult.fit_score, priority },
+      title: 'Lead enriquecido',
+      description: `Score: ${aiResult.fit_score}/100 | Prioridad: ${priority}${sourcesNote}`,
+      metadata: { fit_score: aiResult.fit_score, priority, contact_sources: enrichmentData.raw_ai_response.contact_sources },
     }),
   ])
 
   return { lead, enrichment, score: aiResult.fit_score, priority }
 }
 
-// Enriquecimiento masivo — concurrencia controlada (5 simultáneos, sin delays)
+// ─────────────────────────────────────────────────────────────
+// Enriquecimiento masivo — concurrencia controlada (5 simultáneos)
+// ─────────────────────────────────────────────────────────────
 export async function enrichCampaignLeads(
   campaignId: string,
   userId: string,

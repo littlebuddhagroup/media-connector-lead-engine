@@ -203,7 +203,8 @@ export default function LeadsPage() {
   const [perPage, setPerPage] = useState(50)
 
   // Agrupación por empresa y auto-enriquecimiento
-  const [groupByCompany, setGroupByCompany] = useState(false)
+  // true por defecto: en MMC los leads se ven más útiles agrupados por empresa
+  const [groupByCompany, setGroupByCompany] = useState(true)
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set())
   const [enrichingLead, setEnrichingLead] = useState<{ id: string; name: string } | null>(null)
 

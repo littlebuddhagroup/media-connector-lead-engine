@@ -32,9 +32,21 @@ export async function POST(request: Request, { params }: Params) {
   if (!campaign) return NextResponse.json({ error: 'Campaña no encontrada' }, { status: 404 })
 
   const body = await request.json().catch(() => ({}))
-  const tones: MessageTone[] = body.tones ?? ['consultivo', 'directo', 'cercano']
   const useEmojis: boolean = body.useEmojis ?? false
   const language: string = body.language ?? campaign.language ?? 'es'
+  const totalSteps: 3 | 5 = body.total_steps === 5 ? 5 : 3
+
+  const defaultTones3: MessageTone[] = ['consultivo', 'directo', 'cercano']
+  const defaultTones5: MessageTone[] = ['consultivo', 'directo', 'cercano', 'formal', 'directo']
+  const tones: MessageTone[] = body.tones?.length >= totalSteps
+    ? body.tones.slice(0, totalSteps)
+    : (totalSteps === 5 ? defaultTones5 : defaultTones3)
+
+  const stepTypes = totalSteps === 5
+    ? ['initial_email', 'followup_1', 'followup_2', 'followup_1', 'followup_2'] as const
+    : ['initial_email', 'followup_1', 'followup_2'] as const
+
+  const stepDelays = totalSteps === 5 ? [0, 4, 8, 13, 18] : [0, 5, 10]
 
   // Lead ficticio: los campos de nombre y empresa son las propias variables
   // de plantilla — la IA las usará literalmente en el texto generado.
@@ -81,35 +93,29 @@ export async function POST(request: Request, { params }: Params) {
 
   try {
     const { provider: aiProvider, model: aiModel } = await getUserAISettings(supabase, user.id)
-    const [email1, email2, email3] = await Promise.all([
-      generateMessage(mockLead, mockEnrichment, 'initial_email', tones[0] ?? 'consultivo', undefined, useEmojis, language, aiProvider, aiModel),
-      generateMessage(mockLead, mockEnrichment, 'followup_1',   tones[1] ?? 'directo',    undefined, useEmojis, language, aiProvider, aiModel),
-      generateMessage(mockLead, mockEnrichment, 'followup_2',   tones[2] ?? 'cercano',    undefined, useEmojis, language, aiProvider, aiModel),
-    ])
 
-    const steps = [
-      {
-        step_number: 1,
-        subject: email1.subject ?? `{{company_name}} — Gestión de materiales gráficos`,
-        body: email1.body,
-        delay_days: 0,
-        tone: tones[0] ?? 'consultivo',
-      },
-      {
-        step_number: 2,
-        subject: email2.subject ?? `Re: ¿Has tenido ocasión de revisar mi email?`,
-        body: email2.body,
-        delay_days: 5,
-        tone: tones[1] ?? 'directo',
-      },
-      {
-        step_number: 3,
-        subject: email3.subject ?? `Último apunte antes de cerrar mi agenda`,
-        body: email3.body,
-        delay_days: 10,
-        tone: tones[2] ?? 'cercano',
-      },
+    // Generar todos los emails en paralelo (3 o 5 según total_steps)
+    const emails = await Promise.all(
+      Array.from({ length: totalSteps }, (_, i) =>
+        generateMessage(mockLead, mockEnrichment, stepTypes[i] as Parameters<typeof generateMessage>[2], tones[i], undefined, useEmojis, language, aiProvider, aiModel)
+      )
+    )
+
+    const fallbackSubjects = [
+      `{{company_name}} — Gestión de materiales gráficos`,
+      `Re: ¿Has tenido ocasión de revisar mi email?`,
+      `Último apunte antes de cerrar mi agenda`,
+      `Una idea concreta para {{company_name}}`,
+      `Cerramos el hilo — ¿te interesa?`,
     ]
+
+    const steps = emails.map((email, i) => ({
+      step_number: i + 1,
+      subject: email.subject ?? fallbackSubjects[i],
+      body: email.body,
+      delay_days: stepDelays[i],
+      tone: tones[i],
+    }))
 
     return NextResponse.json({ data: steps })
   } catch (err: unknown) {

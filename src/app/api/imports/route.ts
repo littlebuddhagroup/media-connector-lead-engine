@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { createClient } from '@/lib/supabase/server'
+import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { extractDomain } from '@/lib/utils'
 
 const REQUIRED_FIELDS = ['company_name']
@@ -113,6 +113,18 @@ export async function POST(request: Request) {
       .upsert(
         insertedLeadIds.map(lid => ({ list_id, lead_id: lid })),
         { onConflict: 'list_id,lead_id', ignoreDuplicates: true }
+      )
+  }
+
+  // Asignar a campaign_leads (junction) si se especificó campaign_id
+  // Esto garantiza que los leads importados aparezcan igual que los asignados via UI
+  if (campaign_id && insertedLeadIds.length > 0) {
+    const adminClient = createAdminClient()
+    await adminClient
+      .from('campaign_leads')
+      .upsert(
+        insertedLeadIds.map(lid => ({ campaign_id, lead_id: lid, user_id: user.id })),
+        { onConflict: 'campaign_id,lead_id', ignoreDuplicates: true }
       )
   }
 

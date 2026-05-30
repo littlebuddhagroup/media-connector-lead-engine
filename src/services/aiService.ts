@@ -135,29 +135,44 @@ export async function enrichLeadWithAI(
   modelOverride?: string | null
 ): Promise<EnrichmentResult> {
   const systemPrompt = `Eres un analista comercial B2B especializado en Artwork Management y gestión de packaging para empresas de gran consumo y entornos regulados.
-Tu tarea es analizar empresas potenciales para venderles "MyMediaConnect", una Artwork Proofing Platform SaaS que centraliza el proofing, las aprobaciones y los activos de packaging en una sola plataforma.
+Tu tarea es analizar empresas potenciales para venderles "MyMediaConnect", una plataforma SaaS colaborativa que centraliza la gestión de artwork, activos digitales y aprobaciones de packaging en un solo lugar — con visibilidad total y trazabilidad completa para todos los equipos.
 
-POSICIONAMIENTO: "La capa especializada que transforma el packaging en una ventaja competitiva."
-Lema de producto: "Lanza más rápido. Sin errores."
+POSICIONAMIENTO: "Tu packaging, bajo control. De principio a fin."
+Tagline: "Diseñada para marcas que no pueden permitirse errores, retrasos ni versiones perdidas."
 
-RESULTADOS PROBADOS en clientes actuales:
-- -45% time-to-market en lanzamientos de packaging
-- -85% iteraciones en el proceso de aprobación
-- -75% errores en artes finales
-- -50% costes de gestión del proceso
+MÓDULOS PRINCIPALES DEL PRODUCTO:
+1. SOFTPROOFING — Revisión de artwork con precisión de color, comparación pixel a pixel (3 modos: paralelo, diferencia, parpadeo), anotaciones directas sobre el archivo, verificación de códigos de barras, análisis de separaciones CMYK/Pantone.
+2. DAM (Digital Asset Management) — Repositorio centralizado de logos, plantillas, tipografías, artes aprobadas. Acceso inmediato a la versión correcta. Control de versiones completo con permisos por rol.
+3. FLUJOS DE APROBACIÓN — Tareas, plazos y responsables definidos. Flujos en serie o en paralelo. Aprobación/rechazo digital con historial completo de decisiones, comentarios y marcas de tiempo.
+4. DASHBOARD DE VISIBILIDAD — Vista en tiempo real de todos los proyectos, KPIs, eficiencia por usuario, cuellos de botella y duración de proyectos.
+
+RESULTADOS PROBADOS con clientes reales:
+- -45% tiempo de lanzamiento (time-to-market)
+- -85% iteraciones de aprobación (cero cadenas de email)
+- -50% costes de gestión
+- ~0 errores de artwork antes de imprenta
+
+CLIENTES ACTUALES (referencia de sector/tamaño):
+Florette (alimentación fresca, muchos SKUs y mercados), Calidad Pascual (lácteos FMCG), Chupa Chups / Perfetti Van Melle Group (confitería multinacional), Insud Pharma (farmacéutica), BlueSun (FMCG), Damm (cerveza, sector bebidas), Europastry (panadería industrial), Central Lechera Asturiana (lácteos).
+
+DECISORES CLAVE por rol:
+- Brand Manager / Artworks Director: pierde semanas en rondas de revisión con agencias, no sabe qué versión es la final
+- Marketing Director / Marketing Services Director: los lanzamientos se retrasan por esperar aprobaciones internas, se pierden ventanas comerciales
+- APP Transformation Manager / Quality Manager: necesita trazabilidad completa y cumplimiento regulatorio auditabl
+- COO / Supply Chain: los retrasos de packaging afectan directamente a producción y distribución
 
 MyMediaConnect resuelve estos 4 problemas críticos:
 1. TIME-TO-MARKET LENTO: el packaging es cuello de botella. Se pierden campañas, estacionalidad y ventanas comerciales.
 2. VERSIONES PARALELAS: marketing, diseño y calidad trabajan sobre archivos distintos. Producción imprime el equivocado.
-3. RE-TRABAJO COSTOSO: horas perdidas con agencias rehaciendo artes. Tiradas repetidas por errores detectados tarde.
-4. SIN TRAZABILIDAD: nadie puede demostrar quién aprobó qué. Auditorías y compliance imposibles de defender.
+3. RE-TRABAJO COSTOSO: horas perdidas con agencias rehaciendo artes. Tiradas repetidas por errores detectados tarde. Retiradas de producto por errores en etiquetado.
+4. SIN TRAZABILIDAD: nadie puede demostrar quién aprobó qué. Auditorías y compliance imposibles de defender. Riesgo regulatorio real.
 
 PERFIL IDEAL DE CLIENTE (ICP):
 - Gestiona +100 SKUs activos
 - Lanza o actualiza >100 referencias al año
 - Maneja packaging multi-nivel y multi-mercado
-- Coordina varios equipos internos y externos (marketing, calidad, regulatory, agencias, supply chain)
-- Sectores: FMCG · Pharma & OTC · Cosmética · Retail/MDD · Electrónica · Frescos · Suplementos · Industrial
+- Coordina varios equipos internos y externos (marketing, calidad, regulatory, agencias, supply chain, imprentas)
+- Sectores: FMCG · Alimentación y bebidas · Pharma & OTC · Cosmética · Retail/MDD · Vinos y licores · Suplementos · Química/Industrial
 
 NO es ideal para:
 - Empresas de servicios sin producto físico ni packaging
@@ -165,7 +180,7 @@ NO es ideal para:
 - Startups sin equipo de marketing o procesos regulatorios
 
 SCORING:
-- 85-100: FMCG/cosmética/farma con muchos SKUs, packaging multi-mercado, equipo marketing+calidad+regulatory
+- 85-100: FMCG/cosmética/farma con muchos SKUs, packaging multi-mercado, equipo marketing+calidad+regulatory. Tipo: Florette, Pascual, Chupa Chups, Damm
 - 60-84: sector adecuado pero volumen medio o procesos de aprobación menos complejos
 - 30-59: packaging presente pero pocos SKUs o sector no prioritario
 - 0-29: empresa de servicios, sin marca propia relevante o sin packaging
@@ -231,7 +246,10 @@ export async function generateMessage(
   useEmojis = false,
   language = 'es',
   providerOverride?: string | null,
-  modelOverride?: string | null
+  modelOverride?: string | null,
+  // roleOverride: permite elegir el rol del interlocutor manualmente desde la UI
+  // Si no se especifica, se usa lead.department por defecto
+  roleOverride?: string | null
 ): Promise<GeneratedMessage> {
   const toneDescriptions: Record<MessageTone, string> = {
     cercano: 'Tono cercano, informal pero profesional. Usa tú. Evita la rigidez.',
@@ -324,8 +342,9 @@ Responde SIEMPRE en JSON con "subject" (solo para emails) y "body".`
     quality: `El contacto es de Calidad, Regulatory Affairs o Asuntos Regulatorios. Su dolor más crítico: no puede demostrar la cadena de aprobaciones, las auditorías son un caos documental y existe riesgo legal real por falta de trazabilidad. Resultado clave: audit trail completo e inmutable de quién aprobó qué y cuándo, checklists de compliance integrados en el workflow, evidencia de aprobación lista para inspecciones regulatorias (-75% errores en artes finales).`,
   }
 
-  const deptKey = (lead.department ?? '').toLowerCase()
-  const deptPainPoints = departmentContext[deptKey] || ''
+  // Rol efectivo: prioridad al roleOverride del usuario, después al department del lead
+  const effectiveRole = (roleOverride ?? lead.department ?? '').toLowerCase()
+  const deptPainPoints = departmentContext[effectiveRole] || ''
 
   // Solo nombre de pila — nunca apellido en emails comerciales
   const firstName = lead.first_name?.trim() || null
@@ -336,6 +355,24 @@ Responde SIEMPRE en JSON con "subject" (solo para emails) y "body".`
 
   const langName = LANGUAGE_NAMES[language] ?? language
 
+  // ─── ROI estimado basado en datos del lead y enriquecimiento ─────────────────
+  // Se construye un bloque de ROI potencial para que la IA lo use en el email
+  // cuando tiene sentido (especialmente en follow-up 1 o interlocutor ejecutivo/finanzas)
+  const fitScore = enrichment?.fit_score ?? 0
+  const autoTags = (enrichment?.auto_tags as string[] | undefined) ?? []
+  const hasComplexPackaging = autoTags.some(t =>
+    ['multi-sku', 'global', 'pharma', 'regulatory', 'fmcg', 'retail'].some(kw => t.toLowerCase().includes(kw))
+  )
+  const roiBlock = fitScore > 0 ? `
+ROI POTENCIAL PARA MENCIONAR (solo si encaja con el tipo de mensaje y el rol — no lo inventes si no tienes base):
+- Time-to-market: empresas similares redujeron lanzamientos un -45% (de 12 semanas a ~6)
+- Rondas de aprobación: de media -85% iteraciones (de 8-12 rondas a 1-2)
+- Errores en producción: -75% errores de arte que llegaban a imprenta
+- Coste operativo: -50% costes de gestión del proceso de packaging${hasComplexPackaging ? `
+- Esta empresa tiene señales de alta complejidad (multi-SKU / global / regulado): el ROI potencial es mayor que la media` : ''}
+- Para C-Level/Finanzas: una tirada repetida por error de versión suele costar entre 5.000€ y 50.000€ dependiendo del volumen — más que el coste anual de la plataforma
+IMPORTANTE: Solo menciona ROI si es natural para el tipo de email. En initial_email, úsalo MÁXIMO en una frase. En follow-up_1 puede ser el eje central. En linkedin_message, omítelo.` : ''
+
   const userPrompt = `Genera el siguiente mensaje para este prospecto de MyMediaConnect:
 
 ⚠️ IDIOMA: Escribe TODO el email ÍNTEGRAMENTE en ${langName}. Absolutamente todo: saludo, cuerpo, CTA y cierre. CERO palabras en otro idioma.
@@ -345,7 +382,7 @@ TONO: ${toneDescriptions[tone]}
 
 DATOS DEL DESTINATARIO:
 ${firstName ? `- Nombre de pila (SOLO este, nunca el apellido): ${firstName}` : '- Nombre: desconocido (usa saludo genérico, nunca inventes un nombre)'}
-- Cargo/Departamento: ${lead.department ?? lead.description ?? 'desconocido'}
+- Cargo/Departamento: ${roleOverride ?? lead.department ?? lead.description ?? 'desconocido'}
 - Empresa: ${lead.company_name}
 - Web: ${lead.website ?? 'no disponible'}
 - Sector: ${lead.sector ?? 'desconocido'}
@@ -356,7 +393,7 @@ ${firstName ? `- Nombre de pila (SOLO este, nunca el apellido): ${firstName}` : 
 - Por qué MyMediaConnect encaja: ${fitReason}
 ${deptPainPoints ? `\nÁNGULO ESPECÍFICO POR SU DEPARTAMENTO:\n${deptPainPoints}` : ''}
 ${additionalContext ? `- Contexto adicional: ${additionalContext}` : ''}
-
+${roiBlock}
 INSTRUCCIONES ESPECÍFICAS:
 ${firstName
   ? `- NOMBRE REGLA GLOBAL: usa ÚNICAMENTE el nombre de pila "${firstName}" en el saludo y en todo el cuerpo. JAMÁS uses el apellido ni ningún apellido.`

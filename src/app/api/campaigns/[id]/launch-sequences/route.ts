@@ -98,6 +98,7 @@ export async function POST(
   const accounts: string[] = body.accounts ?? DEFAULT_ACCOUNTS
   const filterLeadIds: string[] | undefined = body.lead_ids
   const language: string = body.language ?? 'es'
+  const totalSteps: 3 | 5 = body.total_steps === 5 ? 5 : 3
 
   if (!accounts.length) {
     return NextResponse.json({ error: 'Debes indicar al menos una cuenta de envío' }, { status: 400 })
@@ -113,7 +114,7 @@ export async function POST(
 
   if (!campaign) return NextResponse.json({ error: 'Campaña no encontrada' }, { status: 404 })
 
-  // ── Buscar plantilla de 3 toques guardada para esta campaña ──
+  // ── Buscar plantilla guardada para esta campaña ──
   const { data: savedTemplates } = await admin
     .from('sequence_templates')
     .select('id, steps')
@@ -123,7 +124,7 @@ export async function POST(
 
   const savedTemplate = savedTemplates?.[0] ?? null
   const templateSteps: TemplateStep[] | null =
-    savedTemplate?.steps && Array.isArray(savedTemplate.steps) && savedTemplate.steps.length === 3
+    savedTemplate?.steps && Array.isArray(savedTemplate.steps) && savedTemplate.steps.length === totalSteps
       ? (savedTemplate.steps as TemplateStep[])
       : null
 
@@ -220,9 +221,10 @@ export async function POST(
         user_id: user.id,
         campaign_id: campaignId,
         lead_id: lead.id,
-        name: `Secuencia 3 toques — ${lead.company_name}`,
+        name: `Secuencia ${totalSteps} toques — ${lead.company_name}`,
         status: 'active',
         current_step: 0,
+        total_steps: totalSteps,
       })))
       .select('id, lead_id')
 
@@ -311,21 +313,31 @@ export async function POST(
             }
           }
 
-          // Generar los 3 emails en paralelo para este lead
-          const [email1, email2, email3] = await Promise.all([
-            generateMessage(lead as never, enrichmentData, 'initial_email', 'consultivo', undefined, false, language, aiProvider, aiModel),
-            generateMessage(lead as never, enrichmentData, 'followup_1', 'directo', undefined, false, language, aiProvider, aiModel),
-            generateMessage(lead as never, enrichmentData, 'followup_2', 'cercano', undefined, false, language, aiProvider, aiModel),
-          ])
+          // Delays y tipos según totalSteps
+          const stepDelays = totalSteps === 5 ? [0, 4, 8, 13, 18] : [0, 5, 10]
+          const stepTones = totalSteps === 5
+            ? ['consultivo', 'directo', 'cercano', 'formal', 'directo']
+            : ['consultivo', 'directo', 'cercano']
+          const stepTypes = totalSteps === 5
+            ? ['initial_email', 'followup_1', 'followup_2', 'followup_1', 'followup_2']
+            : ['initial_email', 'followup_1', 'followup_2']
+
+          // Generar los emails en paralelo para este lead
+          const emails = await Promise.all(
+            Array.from({ length: totalSteps }, (_, idx) =>
+              generateMessage(lead as never, enrichmentData, stepTypes[idx] as Parameters<typeof generateMessage>[2], stepTones[idx] as Parameters<typeof generateMessage>[3], undefined, false, language, aiProvider, aiModel)
+            )
+          )
 
           return {
             lead,
             fromEmail,
-            steps: [
-              { step_number: 1, subject: email1.subject ?? `Presentación MyMediaConnect para ${lead.company_name}`, body: email1.body, delay_days: 0 },
-              { step_number: 2, subject: email2.subject ?? `Re: ¿Has tenido ocasión de revisar mi email?`, body: email2.body, delay_days: 5 },
-              { step_number: 3, subject: email3.subject ?? `Último intento — ¿Te interesa el tema?`, body: email3.body, delay_days: 10 },
-            ],
+            steps: emails.map((email, idx) => ({
+              step_number: idx + 1,
+              subject: email.subject ?? `Email ${idx + 1} — ${lead.company_name}`,
+              body: email.body,
+              delay_days: stepDelays[idx],
+            })),
           }
         } catch (err) {
           return {
@@ -354,9 +366,10 @@ export async function POST(
           user_id: user.id,
           campaign_id: campaignId,
           lead_id: lead.id,
-          name: `Secuencia 3 toques — ${lead.company_name}`,
+          name: `Secuencia ${totalSteps} toques — ${lead.company_name}`,
           status: 'active',
           current_step: 0,
+          total_steps: totalSteps,
         })))
         .select('id, lead_id')
 

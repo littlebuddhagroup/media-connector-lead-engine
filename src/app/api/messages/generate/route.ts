@@ -10,7 +10,8 @@ export async function POST(request: Request) {
   if (!user) return NextResponse.json({ error: 'No autenticado' }, { status: 401 })
 
   const body = await request.json()
-  const { lead_id, type, tone, additional_context, use_emojis } = body
+  // role: rol del interlocutor seleccionado en UI (override del lead.department para el contexto IA)
+  const { lead_id, type, tone, additional_context, use_emojis, lang = 'es', role } = body
 
   if (!lead_id || !type) {
     return NextResponse.json({ error: 'lead_id y type son requeridos' }, { status: 400 })
@@ -37,9 +38,10 @@ export async function POST(request: Request) {
       (tone as MessageTone) ?? 'consultivo',
       additional_context,
       Boolean(use_emojis),
-      'es',
+      (lang as string) || 'es',
       aiProvider,
-      aiModel
+      aiModel,
+      (role as string) || null  // roleOverride: permite adaptar el email a un rol distinto del registrado
     )
 
     // Guardar el mensaje generado

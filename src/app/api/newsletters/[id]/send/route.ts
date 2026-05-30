@@ -213,6 +213,7 @@ export async function POST(_req: Request, { params }: Params) {
         const { data: emailData, error: emailErr } = await resend.emails.send({
           from: `${senderName} <${senderEmail}>`,
           to: recipient.email,
+          bcc: 'mymediaconnect@pipedrivemail.com',
           subject: newsletter.subject,
           html: fullHtml,
           replyTo: newsletter.reply_to || senderEmail,

@@ -28,6 +28,28 @@ export async function GET(_req: Request, { params }: Params) {
   const weekAgo = new Date()
   weekAgo.setDate(weekAgo.getDate() - 7)
 
+  // Obtener todos los lead_ids de esta campaña (fuente 1: leads.campaign_id, fuente 2: junction)
+  const [directLeadsRes, junctionLeadsRes] = await Promise.all([
+    admin.from('leads').select('id').eq('campaign_id', id),
+    admin.from('campaign_leads').select('lead_id').eq('campaign_id', id),
+  ])
+  const directIds = (directLeadsRes.data ?? []).map((r: { id: string }) => r.id)
+  const junctionIds = (junctionLeadsRes.data ?? []).map((r: { lead_id: string }) => r.lead_id)
+  const allLeadIds = [...new Set([...directIds, ...junctionIds])]
+
+  // Si no hay leads en esta campaña, devolver stats vacías rápido
+  if (allLeadIds.length === 0) {
+    return NextResponse.json({
+      data: {
+        leads: { total: 0, enriched: 0, contacted: 0, replied: 0, interested: 0, meetings: 0, closed: 0, discarded: 0, new: 0, avg_score: 0, by_priority: { high: 0, medium: 0, low: 0 } },
+        emails: { sent: 0, opened: 0, clicked: 0, replied: 0, bounced: 0, open_rate: 0, click_rate: 0, reply_rate: 0 },
+        sequences: { active: 0 },
+        conversion: { contact_rate: 0, reply_rate: 0, meeting_rate: 0 },
+        recent_activity: [],
+      }
+    })
+  }
+
   // ── Todas las queries en paralelo — COUNT queries sin cargar filas ──
   const [
     { count: total },
@@ -47,21 +69,21 @@ export async function GET(_req: Request, { params }: Params) {
     { count: activeSequences },
     activityRes,
   ] = await Promise.all([
-    // Counts de leads por estado (12 queries ultra-rápidas — solo cuentan, no cargan filas)
-    admin.from('leads').select('*', { count: 'exact', head: true }).eq('campaign_id', id),
-    admin.from('leads').select('*', { count: 'exact', head: true }).eq('campaign_id', id).eq('is_enriched', true),
-    admin.from('leads').select('*', { count: 'exact', head: true }).eq('campaign_id', id).in('status', CONTACTED_STATUSES),
-    admin.from('leads').select('*', { count: 'exact', head: true }).eq('campaign_id', id).in('status', REPLIED_STATUSES),
-    admin.from('leads').select('*', { count: 'exact', head: true }).eq('campaign_id', id).in('status', INTERESTED_STATUSES),
-    admin.from('leads').select('*', { count: 'exact', head: true }).eq('campaign_id', id).eq('status', 'meeting_scheduled'),
-    admin.from('leads').select('*', { count: 'exact', head: true }).eq('campaign_id', id).eq('status', 'closed'),
-    admin.from('leads').select('*', { count: 'exact', head: true }).eq('campaign_id', id).eq('status', 'discarded'),
-    admin.from('leads').select('*', { count: 'exact', head: true }).eq('campaign_id', id).eq('status', 'new'),
-    admin.from('leads').select('*', { count: 'exact', head: true }).eq('campaign_id', id).eq('priority', 'high'),
-    admin.from('leads').select('*', { count: 'exact', head: true }).eq('campaign_id', id).eq('priority', 'medium'),
-    admin.from('leads').select('*', { count: 'exact', head: true }).eq('campaign_id', id).eq('priority', 'low'),
+    // Counts de leads por estado usando IDs unificados de ambas fuentes
+    admin.from('leads').select('*', { count: 'exact', head: true }).in('id', allLeadIds),
+    admin.from('leads').select('*', { count: 'exact', head: true }).in('id', allLeadIds).eq('is_enriched', true),
+    admin.from('leads').select('*', { count: 'exact', head: true }).in('id', allLeadIds).in('status', CONTACTED_STATUSES),
+    admin.from('leads').select('*', { count: 'exact', head: true }).in('id', allLeadIds).in('status', REPLIED_STATUSES),
+    admin.from('leads').select('*', { count: 'exact', head: true }).in('id', allLeadIds).in('status', INTERESTED_STATUSES),
+    admin.from('leads').select('*', { count: 'exact', head: true }).in('id', allLeadIds).eq('status', 'meeting_scheduled'),
+    admin.from('leads').select('*', { count: 'exact', head: true }).in('id', allLeadIds).eq('status', 'closed'),
+    admin.from('leads').select('*', { count: 'exact', head: true }).in('id', allLeadIds).eq('status', 'discarded'),
+    admin.from('leads').select('*', { count: 'exact', head: true }).in('id', allLeadIds).eq('status', 'new'),
+    admin.from('leads').select('*', { count: 'exact', head: true }).in('id', allLeadIds).eq('priority', 'high'),
+    admin.from('leads').select('*', { count: 'exact', head: true }).in('id', allLeadIds).eq('priority', 'medium'),
+    admin.from('leads').select('*', { count: 'exact', head: true }).in('id', allLeadIds).eq('priority', 'low'),
     // Solo scores (columna numérica ligera — para calcular media)
-    admin.from('leads').select('score').eq('campaign_id', id).not('score', 'is', null).gt('score', 0),
+    admin.from('leads').select('score').in('id', allLeadIds).not('score', 'is', null).gt('score', 0),
     // Emails con solo columnas de tracking
     admin.from('emails').select('status, opened_at, clicked_at').eq('campaign_id', id),
     // Secuencias activas — solo count

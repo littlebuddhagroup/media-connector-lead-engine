@@ -7,10 +7,22 @@ import { ArrowLeft, Save } from 'lucide-react'
 import Link from 'next/link'
 import { parseKeywords } from '@/lib/utils'
 
+// Sectores ICP de MyMediaConnect — empresas con packaging, artwork y gestión de etiquetado
 const SECTORS = [
-  'Medios de comunicación', 'Publicidad y marketing', 'Tecnología', 'Entretenimiento',
-  'Educación', 'Salud', 'Retail', 'Finanzas', 'Hostelería', 'Inmobiliaria',
-  'Consultoría', 'Manufactura', 'Logística', 'Energía', 'Otro'
+  'Alimentación y bebidas FMCG',
+  'Pharma y parafarmacia OTC',
+  'Cosmética y cuidado personal',
+  'Retail y marca del distribuidor (MDD)',
+  'Vinos y licores',
+  'Lácteos y frescos',
+  'Snacks y confitería',
+  'Bebidas refrescantes',
+  'Suplementos y nutrición',
+  'Productos de limpieza y hogar',
+  'Mascotas (pet care)',
+  'Electrónica de consumo',
+  'Químico / Industrial con marca propia',
+  'Otro',
 ]
 
 export default function NewCampaignPage() {

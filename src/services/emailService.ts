@@ -115,6 +115,7 @@ export async function sendEmail(
       from: `${fromName} <${fromEmail}>`,
       to: input.to_name ? `${input.to_name} <${input.to_email}>` : input.to_email,
       replyTo,
+      bcc: 'mymediaconnect@pipedrivemail.com',
       subject: input.subject,
       text: textBody,
       html: fullHtmlBody,

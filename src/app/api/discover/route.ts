@@ -30,6 +30,21 @@ async function findEmail(domain: string): Promise<{ email?: string; confidence?:
   }
 }
 
+// Dominios de directorios, redes sociales y portales que no son empresas objetivo
+const NOISE_DOMAINS = [
+  'linkedin.com', 'facebook.com', 'instagram.com', 'twitter.com', 'x.com',
+  'youtube.com', 'tiktok.com', 'pinterest.com',
+  'wikipedia.org', 'wikimedia.org',
+  'yelp.com', 'tripadvisor.com', 'google.com', 'maps.google.com',
+  'amazon.com', 'amazon.es', 'amazon.fr', 'amazon.co.uk',
+  'infobel.com', 'empresite.com', 'einforma.com', 'axesor.es',
+  'sabi.bvdinfo.com', 'expansion.com', 'eleconomista.es',
+  'paginas-amarillas.es', 'paginasamarillas.es', 'europages.com',
+  'kompass.com', 'opencorporates.com', 'dnb.com',
+  'bloomberg.com', 'forbes.com', 'glassdoor.com', 'indeed.com',
+  'crunchbase.com', 'zoominfo.com',
+]
+
 export async function POST(request: Request) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
@@ -41,13 +56,20 @@ export async function POST(request: Request) {
   const apiKey = process.env.SERPAPI_API_KEY
   if (!apiKey) return NextResponse.json({ error: 'SerpAPI no configurado' }, { status: 400 })
 
+  // Añadir exclusiones de dominios ruido para mejorar calidad de resultados
+  const exclusions = '-site:linkedin.com -site:facebook.com -site:wikipedia.org -site:instagram.com -site:twitter.com -site:youtube.com -site:yelp.com -site:tripadvisor.com -site:amazon.com -site:bloomberg.com -site:glassdoor.com -site:crunchbase.com -site:kompass.com -site:europages.com -site:einforma.com'
+  const enrichedQuery = `${query.trim()} ${exclusions}`
+
+  // SerpAPI admite hasta 100 resultados; pedimos un extra para compensar los filtrados
+  const requestNum = Math.min(100, Math.max(10, num + 10))
+
   const params = new URLSearchParams({
     api_key: apiKey,
     engine: 'google',
-    q: query,
+    q: enrichedQuery,
     gl: country,
     hl: 'es',
-    num: String(num),
+    num: String(requestNum),
   })
 
   const res = await fetch(`https://serpapi.com/search?${params}`)
@@ -61,7 +83,7 @@ export async function POST(request: Request) {
     .from('leads').select('domain, email').eq('user_id', user.id)
   const existingDomains = new Set((existing ?? []).map((l: { domain: string }) => l.domain?.toLowerCase()).filter(Boolean))
 
-  // Procesar resultados + buscar emails en paralelo
+  // Procesar resultados filtrando directorios y portales no-empresa
   const rawResults = organic
     .filter((r: Record<string, string>) => r.link)
     .map((r: Record<string, string>) => {
@@ -75,6 +97,11 @@ export async function POST(request: Request) {
         already_exists: existingDomains.has(domain.toLowerCase()),
       }
     })
+    .filter((r: { domain: string }) => {
+      // Descartar dominios conocidos como no-empresa
+      return r.domain && !NOISE_DOMAINS.some(noise => r.domain === noise || r.domain.endsWith(`.${noise}`))
+    })
+    .slice(0, num) // Limitar al número solicitado
 
   // Buscar emails para todos los dominios en paralelo
   const withEmails = await Promise.all(
@@ -84,7 +111,11 @@ export async function POST(request: Request) {
     })
   )
 
-  return NextResponse.json({ data: withEmails })
+  // Devolver solo resultados con email encontrado (más relevantes arriba)
+  const withEmailOnly = withEmails.filter(r => r.email)
+  const withoutEmail = withEmails.filter(r => !r.email)
+
+  return NextResponse.json({ data: [...withEmailOnly, ...withoutEmail] })
 }
 
 // Añadir lead desde descubrimiento

@@ -148,10 +148,12 @@ export default function DiscoverPage() {
               <select className="input w-36 text-sm" value={country} onChange={e => setCountry(e.target.value)}>
                 {COUNTRIES.map(c => <option key={c.code} value={c.code}>{c.label}</option>)}
               </select>
-              <select className="input w-32 text-sm" value={num} onChange={e => setNum(Number(e.target.value))}>
+              <select className="input w-36 text-sm" value={num} onChange={e => setNum(Number(e.target.value))}>
                 <option value={5}>5 empresas</option>
                 <option value={10}>10 empresas</option>
                 <option value={20}>20 empresas</option>
+                <option value={50}>50 empresas</option>
+                <option value={100}>100 empresas</option>
               </select>
               <button type="submit" disabled={loading || !query.trim()} className="btn-primary text-sm px-5">
                 {loading
@@ -226,11 +228,14 @@ export default function DiscoverPage() {
           <div className="card overflow-hidden">
             <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
               <div>
-                <h3 className="text-sm font-semibold text-gray-900">{results.length} empresas encontradas</h3>
+                <h3 className="text-sm font-semibold text-gray-900">{withEmail} empresas con email encontrado</h3>
                 <p className="text-xs text-gray-500 mt-0.5">
-                  <span className="text-green-600 font-medium">{withEmail} con email</span>
-                  {' · '}
-                  {results.filter(r => r.already_exists).length} ya en el CRM
+                  {results.filter(r => !r.email).length > 0 && (
+                    <><span className="text-gray-400">{results.filter(r => !r.email).length} sin email</span>{' · '}</>
+                  )}
+                  {results.filter(r => r.already_exists).length > 0 && (
+                    <><span className="text-amber-600 font-medium">{results.filter(r => r.already_exists).length} ya en CRM</span></>
+                  )}
                 </p>
               </div>
             </div>

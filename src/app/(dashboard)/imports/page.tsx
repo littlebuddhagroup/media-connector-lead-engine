@@ -29,6 +29,7 @@ function ImportsPageContent() {
   const searchParams = useSearchParams()
   const listIdFromUrl = searchParams.get('list') ?? ''
   const listNameFromUrl = searchParams.get('listName') ?? ''
+  const campaignIdFromUrl = searchParams.get('campaign') ?? ''
 
   const [step, setStep] = useState<'upload' | 'map' | 'preview' | 'result'>('upload')
   const [rows, setRows] = useState<ParsedRow[]>([])
@@ -36,7 +37,7 @@ function ImportsPageContent() {
   const [fileName, setFileName] = useState('')
   const [fileType, setFileType] = useState<FileType>('csv')
   const [mapping, setMapping] = useState<Record<string, string>>({})
-  const [campaignId, setCampaignId] = useState('')
+  const [campaignId, setCampaignId] = useState(campaignIdFromUrl)
   const [campaigns, setCampaigns] = useState<Campaign[]>([])
   const [importing, setImporting] = useState(false)
   const [result, setResult] = useState<{

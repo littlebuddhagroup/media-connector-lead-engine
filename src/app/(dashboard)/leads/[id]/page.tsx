@@ -245,6 +245,34 @@ function ArtworkGapRadar({ enrichment }: { enrichment: Record<string, unknown> }
               </div>
             </div>
           ))}
+
+          {/* Fuentes analizadas */}
+          {(() => {
+            type RawSignal = { query: string; results: Array<{ title: string; snippet: string; url?: string; date?: string }> }
+            const rawSignals = (enrichment.raw_ai_response as Record<string, unknown>)?.brand_signals as RawSignal[] | undefined
+            const totalSources = rawSignals?.reduce((acc, s) => acc + (s.results?.length ?? 0), 0) ?? 0
+            if (!rawSignals || totalSources === 0) {
+              return <p className="text-[9px] pt-1 text-gray-400">Análisis basado en web corporativa</p>
+            }
+            const headlines = rawSignals.flatMap(s => s.results ?? []).filter(r => r.snippet && r.snippet.length > 20).slice(0, 2)
+            return (
+              <div className="pt-2 space-y-1.5">
+                <div className="flex items-center gap-1.5">
+                  <span className="w-1 h-1 rounded-full bg-indigo-500 shrink-0" />
+                  <span className="text-[9px] font-semibold uppercase tracking-[0.1em] text-indigo-500">
+                    {totalSources} fuentes en internet analizadas
+                  </span>
+                </div>
+                {headlines.map((h, hi) => (
+                  <div key={hi} className="rounded-lg px-2.5 py-1.5" style={{ background: 'rgba(99,102,241,0.06)', border: '1px solid rgba(99,102,241,0.12)' }}>
+                    <p className="text-[10px] font-medium leading-tight line-clamp-1 text-gray-600">{h.title}</p>
+                    <p className="text-[9px] mt-0.5 leading-tight line-clamp-2 text-gray-400">{h.snippet}</p>
+                    {h.date && <p className="text-[8px] mt-0.5 text-indigo-300">{h.date}</p>}
+                  </div>
+                ))}
+              </div>
+            )
+          })()}
         </div>
       </div>
     </div>
@@ -267,6 +295,8 @@ export default function LeadDetailPage({ params }: { params: { id: string } }) {
   const [lead, setLead] = useState<LeadRecord | null>(null)
   const [loading, setLoading] = useState(true)
   const [enriching, setEnriching] = useState(false)
+  const [lushaEnriching, setLushaEnriching] = useState(false)
+  const [lushaConnected, setLushaConnected] = useState<boolean | null>(null)
   const [activeTab, setActiveTab] = useState<'info'|'messages'|'emails'|'notes'|'tasks'|'activity'|'sequences'>('info')
 
   // Modals
@@ -281,10 +311,15 @@ export default function LeadDetailPage({ params }: { params: { id: string } }) {
   const [msgTab, setMsgTab] = useState<'generate' | 'improve'>('generate')
   const [msgType, setMsgType] = useState('initial_email')
   const [msgTone, setMsgTone] = useState('consultivo')
+  const [msgLang, setMsgLang] = useState<'es' | 'en' | 'fr'>('es')
+  // msgRole: rol del interlocutor para adaptar el pain point del email
+  // vacío = usar el department del lead; si se selecciona, sobrescribe para esa generación
+  const [msgRole, setMsgRole] = useState('')
   const [msgEmojis, setMsgEmojis] = useState(false)
   const [generatingMsg, setGeneratingMsg] = useState(false)
   const [generatedMsg, setGeneratedMsg] = useState<{subject?: string; body: string} | null>(null)
   const [copiedMsg, setCopiedMsg] = useState(false)
+  const [deletingMsgId, setDeletingMsgId] = useState<string | null>(null)
 
   // Improve message form
   const [userDraft, setUserDraft] = useState('')
@@ -308,6 +343,7 @@ export default function LeadDetailPage({ params }: { params: { id: string } }) {
   const [launchingSequence, setLaunchingSequence] = useState(false)
   const [showSequenceModal, setShowSequenceModal] = useState(false)
   const [seqLanguage, setSeqLanguage] = useState('es')
+  const [seqTotalSteps, setSeqTotalSteps] = useState<3 | 5>(3)
   const [triggeringSequence, setTriggeringSequence] = useState(false)
   const [triggerResult, setTriggerResult] = useState<{ sent: number; skipped: number; failed: number; message: string } | null>(null)
   const [restartingSeqId, setRestartingSeqId] = useState<string | null>(null)
@@ -507,6 +543,14 @@ export default function LeadDetailPage({ params }: { params: { id: string } }) {
 
   useEffect(() => { fetchLead(); fetchSequences(); fetchLeadCampaigns(); fetchAllCampaigns(); fetchLeadLists(); fetchAllLists() }, [id])
 
+  // Verificar si Lusha está conectado (solo una vez)
+  useEffect(() => {
+    fetch('/api/lusha')
+      .then(r => r.json())
+      .then(j => setLushaConnected(j.connected === true))
+      .catch(() => setLushaConnected(false))
+  }, [])
+
   const handleEnrich = async () => {
     setEnriching(true)
     const res = await fetch(`/api/leads/${id}/enrich`, { method: 'POST' })
@@ -532,6 +576,61 @@ export default function LeadDetailPage({ params }: { params: { id: string } }) {
     } else {
       toast.aiError(json.error ?? 'Error desconocido')
     }
+  }
+
+  const handleLushaEnrich = async () => {
+    if (!lead) return
+    setLushaEnriching(true)
+
+    // Paso 1: intentar con Lusha /person (necesita nombre de contacto)
+    const res = await fetch('/api/lusha/enrich', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lead_id: id }),
+    })
+    const json = await res.json()
+
+    if (res.ok && json.enriched > 0) {
+      // Lusha encontró datos — éxito
+      toast.success('Datos actualizados con Lusha', json.message)
+      fetchLead()
+      setLushaEnriching(false)
+      return
+    }
+
+    if (res.ok && json.errors > 0) {
+      toast.error('Error de Lusha', json.message || 'Comprueba tu API key y créditos en Lusha → Settings → API.')
+      setLushaEnriching(false)
+      return
+    }
+
+    if (res.ok && json.skipped > 0) {
+      toast.success('Lead completo', 'Este lead ya tiene email y teléfono.')
+      setLushaEnriching(false)
+      return
+    }
+
+    // Paso 2: sin nombre o no encontrado en Lusha → fallback a cadena completa (SerpAPI + Hunter + IA)
+    const reason = json.no_name > 0
+      ? 'Sin nombre de contacto'
+      : 'No encontrado en Lusha'
+
+    toast.info(`${reason} — buscando con SerpAPI + Hunter...`, '')
+
+    try {
+      const enrichRes = await fetch(`/api/leads/${id}/enrich`, { method: 'POST' })
+      const enrichJson = await enrichRes.json()
+      fetchLead()
+      if (enrichJson.email || enrichJson.data?.email) {
+        toast.success('¡Email encontrado!', `Enriquecido vía SerpAPI/Hunter: ${enrichJson.email ?? enrichJson.data?.email}`)
+      } else {
+        toast.success('Enriquecimiento completado', 'Se buscó con SerpAPI + Hunter + IA. Puede que no haya email público disponible.')
+      }
+    } catch {
+      toast.warning('Sin resultados', 'No se encontraron datos de contacto con ninguna fuente disponible.')
+    }
+
+    setLushaEnriching(false)
   }
 
   const handleDelete = async () => {
@@ -601,7 +700,7 @@ export default function LeadDetailPage({ params }: { params: { id: string } }) {
     const res = await fetch('/api/messages/generate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ lead_id: id, type: msgType, tone: msgTone, use_emojis: msgEmojis }),
+      body: JSON.stringify({ lead_id: id, type: msgType, tone: msgTone, use_emojis: msgEmojis, lang: msgLang, role: msgRole || undefined }),
     })
     setGeneratingMsg(false)
     if (res.ok) {
@@ -611,6 +710,19 @@ export default function LeadDetailPage({ params }: { params: { id: string } }) {
     } else {
       const json = await res.json()
       toast.aiError(json.error ?? 'Error generando mensaje')
+    }
+  }
+
+  const handleDeleteMessage = async (msgId: string) => {
+    setDeletingMsgId(msgId)
+    const res = await fetch(`/api/messages/${msgId}`, { method: 'DELETE' })
+    setDeletingMsgId(null)
+    if (res.ok) {
+      fetchLead()
+      toast.success('Mensaje eliminado', 'El mensaje ha sido borrado.')
+    } else {
+      const json = await res.json()
+      toast.error('Error', json.error ?? 'No se pudo eliminar el mensaje.')
     }
   }
 
@@ -754,7 +866,7 @@ export default function LeadDetailPage({ params }: { params: { id: string } }) {
     const res = await fetch('/api/sequences/preview', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ lead_id: id, language: seqLanguage }),
+      body: JSON.stringify({ lead_id: id, language: seqLanguage, total_steps: seqTotalSteps }),
     })
     setGeneratingPreview(false)
     if (res.ok) {
@@ -787,6 +899,7 @@ export default function LeadDetailPage({ params }: { params: { id: string } }) {
         lead_id: id,
         campaign_id: (lead as Record<string, string>)?.campaign_id ?? null,
         language: seqLanguage,
+        total_steps: seqTotalSteps,
         custom_steps: previewSteps.map(s => ({
           step_number: s.step_number,
           subject: s.subject,
@@ -803,7 +916,7 @@ export default function LeadDetailPage({ params }: { params: { id: string } }) {
       setPreviewSteps([])
       fetchSequences()
       fetchLead()
-      toast.success('Secuencia programada', 'Los 3 emails están programados y se enviarán automáticamente en las fechas elegidas.')
+      toast.success('Secuencia programada', `Los ${seqTotalSteps} emails están programados y se enviarán automáticamente en las fechas elegidas.`)
     } else {
       const json = await res.json()
       toast.aiError(json.error ?? 'Error al iniciar secuencia')
@@ -836,7 +949,7 @@ export default function LeadDetailPage({ params }: { params: { id: string } }) {
   }
 
   const handleRestartSequence = async (sequenceId: string) => {
-    if (!confirm('¿Reiniciar la secuencia? Se cancelará la actual, se regenerarán los 3 emails con IA y se reprogramarán desde hoy.')) return
+    if (!confirm(`¿Reiniciar la secuencia? Se cancelará la actual, se regenerarán los ${seqTotalSteps} emails con IA y se reprogramarán desde hoy.`)) return
     setRestartingSeqId(sequenceId)
     setTriggerResult(null)
     const res = await fetch('/api/sequences', {
@@ -924,6 +1037,29 @@ export default function LeadDetailPage({ params }: { params: { id: string } }) {
             >
               <Trash2 className="w-3.5 h-3.5" /> Eliminar
             </button>
+            {/* Demo Brief: abre one-pager HTML imprimible en nueva pestaña */}
+            {Boolean(lead.is_enriched) && (
+              <a
+                href={`/api/leads/${id}/demo-brief`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="btn-secondary text-xs py-1.5 flex items-center gap-1.5"
+                title="Genera un one-pager listo para imprimir o enviar como PDF"
+              >
+                <ExternalLink className="w-3.5 h-3.5" /> Demo Brief
+              </a>
+            )}
+            {lushaConnected && (
+              <button
+                onClick={handleLushaEnrich}
+                disabled={lushaEnriching}
+                className="btn-secondary text-xs py-1.5"
+                title="Busca email, teléfono y LinkedIn en Lusha"
+              >
+                <Sparkles className="w-3.5 h-3.5" />
+                {lushaEnriching ? 'Buscando...' : 'Lusha'}
+              </button>
+            )}
             <button
               onClick={handleEnrich}
               disabled={enriching}
@@ -1311,7 +1447,7 @@ export default function LeadDetailPage({ params }: { params: { id: string } }) {
                       onClick={() => setShowSequenceModal(true)}
                       className="btn-primary w-full justify-start text-xs"
                     >
-                      <Mails className="w-4 h-4" /> Iniciar secuencia 3 toques
+                      <Mails className="w-4 h-4" /> Iniciar secuencia
                     </button>
                   )
                 })()
@@ -1321,7 +1457,7 @@ export default function LeadDetailPage({ params }: { params: { id: string } }) {
                   className="btn-secondary w-full justify-start text-xs opacity-40 cursor-not-allowed"
                   title="Este lead no tiene email"
                 >
-                  <Mails className="w-4 h-4" /> Secuencia 3 toques
+                  <Mails className="w-4 h-4" /> Secuencia {seqTotalSteps} toques
                 </button>
               )}
               {/* Aviso overdue */}
@@ -1445,7 +1581,20 @@ export default function LeadDetailPage({ params }: { params: { id: string } }) {
                           <span className="text-xs font-semibold text-brand-700 uppercase tracking-wide">
                             {msg.type.replace('_', ' ')}
                           </span>
-                          <span className="text-xs text-gray-400">{formatDate(msg.created_at)}</span>
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs text-gray-400">{formatDate(msg.created_at)}</span>
+                            <button
+                              onClick={() => handleDeleteMessage(msg.id)}
+                              disabled={deletingMsgId === msg.id}
+                              className="p-1 rounded-lg text-gray-300 hover:text-red-500 hover:bg-red-50 transition-colors"
+                              title="Eliminar mensaje"
+                            >
+                              {deletingMsgId === msg.id
+                                ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                : <Trash2 className="w-3.5 h-3.5" />
+                              }
+                            </button>
+                          </div>
                         </div>
                         {msg.subject && (
                           <p className="text-sm font-medium text-gray-800 mb-1">Asunto: {msg.subject}</p>
@@ -1548,7 +1697,7 @@ export default function LeadDetailPage({ params }: { params: { id: string } }) {
                             className="btn-primary text-xs py-1.5"
                             disabled={!(lead as Record<string, string>).email}
                           >
-                            <Mails className="w-3.5 h-3.5" /> Iniciar secuencia 3 toques
+                            <Mails className="w-3.5 h-3.5" /> Iniciar secuencia
                           </button>
                         )}
                       </div>
@@ -1575,7 +1724,7 @@ export default function LeadDetailPage({ params }: { params: { id: string } }) {
                       <div className="text-center py-8">
                         <Mails className="w-8 h-8 text-gray-300 mx-auto mb-3" />
                         <p className="text-sm text-gray-500 mb-2">Sin secuencias activas</p>
-                        <p className="text-xs text-gray-400">Una secuencia envía 3 emails automáticos: día 1, día 5 y día 10</p>
+                        <p className="text-xs text-gray-400">{seqTotalSteps === 5 ? 'Una secuencia envía 5 emails automáticos: día 0, 4, 8, 13 y 18' : 'Una secuencia envía 3 emails automáticos: día 1, día 5 y día 10'}</p>
                       </div>
                     )}
 
@@ -1921,6 +2070,53 @@ export default function LeadDetailPage({ params }: { params: { id: string } }) {
             </button>
           </div>
 
+          {/* Idioma */}
+          <div>
+            <label className="label">Idioma</label>
+            <div className="flex gap-1.5">
+              {(['es', 'en', 'fr'] as const).map(l => (
+                <button
+                  key={l}
+                  type="button"
+                  onClick={() => setMsgLang(l)}
+                  className={`flex-1 py-2 rounded-xl border-2 text-xs font-semibold uppercase tracking-wide transition-all ${
+                    msgLang === l
+                      ? 'border-brand-500 bg-brand-50 text-brand-700'
+                      : 'border-gray-200 bg-white text-gray-400 hover:border-gray-300 hover:text-gray-600'
+                  }`}
+                >
+                  {l === 'es' ? '🇪🇸 ES' : l === 'en' ? '🇬🇧 EN' : '🇫🇷 FR'}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Rol del interlocutor — sobrescribe el departamento del lead para personalizar el ángulo de dolor */}
+          <div>
+            <label className="label flex items-center gap-1.5">
+              Rol del interlocutor
+              <span className="text-[10px] font-normal text-gray-400 normal-case tracking-normal">
+                (opcional — por defecto usa el del lead)
+              </span>
+            </label>
+            <select
+              className="input text-sm"
+              value={msgRole}
+              onChange={e => setMsgRole(e.target.value)}
+            >
+              <option value="">— Auto (usar departamento del lead) —</option>
+              <option value="marketing">Marketing / Brand Manager</option>
+              <option value="executive">C-Level / Director General</option>
+              <option value="quality">Calidad / Regulatory Affairs</option>
+              <option value="management">Operaciones / Management</option>
+              <option value="communication">Comunicación / Brand</option>
+              <option value="finance">Finanzas / Control de Gestión</option>
+              <option value="it">IT / Sistemas</option>
+              <option value="sales">Ventas / Trade Marketing</option>
+              <option value="hr">RRHH / Employer Branding</option>
+            </select>
+          </div>
+
           {/* Tono (compartido por los dos modos) */}
           <div className={`grid gap-4 ${msgTab === 'generate' ? 'grid-cols-2' : 'grid-cols-1'}`}>
             {msgTab === 'generate' && (
@@ -2241,21 +2437,57 @@ export default function LeadDetailPage({ params }: { params: { id: string } }) {
       <Modal
         isOpen={showSequenceModal}
         onClose={() => { setShowSequenceModal(false); setSeqModalStep('info'); setPreviewSteps([]) }}
-        title={seqModalStep === 'info' ? 'Iniciar secuencia 3 toques' : 'Revisar emails antes de enviar'}
+        title={seqModalStep === 'info' ? `Iniciar secuencia ${seqTotalSteps} toques` : `Revisar emails antes de enviar (${seqTotalSteps} toques)`}
         size="lg"
       >
         {seqModalStep === 'info' ? (
           <div className="space-y-4">
-            <div className="p-4 bg-brand-50 border border-brand-100 rounded-xl text-sm text-brand-800 space-y-2">
-              <p className="font-medium">¿Cómo funciona la secuencia?</p>
+            {/* Selector 3 o 5 toques */}
+            <div className="space-y-1">
+              <label className="text-xs font-semibold text-gray-700">Número de toques</label>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  onClick={() => setSeqTotalSteps(3)}
+                  className={`p-3 rounded-xl border-2 text-left transition-all ${seqTotalSteps === 3 ? 'border-brand-500 bg-brand-50' : 'border-gray-200 hover:border-gray-300'}`}
+                >
+                  <div className="text-sm font-bold text-gray-800">3 toques</div>
+                  <div className="text-xs text-gray-500 mt-0.5">Días 0 · 5 · 10</div>
+                  <div className="text-xs text-brand-600 mt-1">Secuencia estándar</div>
+                </button>
+                <button
+                  onClick={() => setSeqTotalSteps(5)}
+                  className={`p-3 rounded-xl border-2 text-left transition-all ${seqTotalSteps === 5 ? 'border-brand-500 bg-brand-50' : 'border-gray-200 hover:border-gray-300'}`}
+                >
+                  <div className="text-sm font-bold text-gray-800">5 toques</div>
+                  <div className="text-xs text-gray-500 mt-0.5">Días 0 · 4 · 8 · 13 · 18</div>
+                  <div className="text-xs text-brand-600 mt-1">Mayor persistencia</div>
+                </button>
+              </div>
+            </div>
+
+            <div key={seqTotalSteps} className="p-4 bg-brand-50 border border-brand-100 rounded-xl text-sm text-brand-800 space-y-2">
+              <p className="font-medium">
+                Secuencia de <strong>{seqTotalSteps} toques</strong> — ¿cómo funciona?
+              </p>
               <ul className="text-xs space-y-1 text-brand-700">
-                <li>📧 <strong>Email 1</strong> — Se programa para mañana a las 9:00 (o cuando elijas)</li>
-                <li>📧 <strong>Email 2</strong> — Se programa automáticamente 5 días después</li>
-                <li>📧 <strong>Email 3</strong> — Se programa automáticamente 10 días después</li>
+                {seqTotalSteps === 3 ? (
+                  <>
+                    <li>📧 <strong>Email 1</strong> — Hoy a las 9:00 (o cuando elijas)</li>
+                    <li>📧 <strong>Email 2</strong> — Automático, día 5</li>
+                    <li>📧 <strong>Email 3</strong> — Automático, día 10</li>
+                  </>
+                ) : (
+                  <>
+                    <li>📧 <strong>Email 1</strong> — Hoy a las 9:00 (o cuando elijas)</li>
+                    <li>📧 <strong>Email 2</strong> — Automático, día 4</li>
+                    <li>📧 <strong>Email 3</strong> — Automático, día 8</li>
+                    <li>📧 <strong>Email 4</strong> — Automático, día 13</li>
+                    <li>📧 <strong>Email 5</strong> — Automático, día 18</li>
+                  </>
+                )}
               </ul>
               <p className="text-xs text-brand-600 mt-2">
-                La IA generará los 3 emails personalizados. Podrás revisarlos, editarlos y ajustar la fecha de envío de cada uno.
-                Si el lead contesta, la secuencia se pausa automáticamente.
+                La IA generará los <strong>{seqTotalSteps} emails</strong> personalizados para {(lead as Record<string, string>).company_name}. Podrás revisarlos y editarlos antes de confirmar. Si el lead contesta, la secuencia se pausa automáticamente.
               </p>
             </div>
             <div className="p-3 bg-gray-50 rounded-lg text-xs text-gray-600 space-y-2">
@@ -2298,7 +2530,7 @@ export default function LeadDetailPage({ params }: { params: { id: string } }) {
           <div className="space-y-4">
             <div className="p-3 bg-brand-50 border border-brand-100 rounded-lg text-xs text-brand-800 flex items-start gap-2">
               <span className="text-base">✏️</span>
-              <span>Revisa y edita los emails. Puedes ajustar el <strong>asunto, cuerpo y fecha de envío</strong> de cada email. Los 3 emails se enviarán automáticamente vía cron cuando llegue su fecha.</span>
+              <span>Revisa y edita los emails. Puedes ajustar el <strong>asunto, cuerpo y fecha de envío</strong> de cada email. Los {seqTotalSteps} emails se enviarán automáticamente vía cron cuando llegue su fecha.</span>
             </div>
 
             {/* Lista de emails editables */}

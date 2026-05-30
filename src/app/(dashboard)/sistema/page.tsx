@@ -5,11 +5,26 @@ import TopBar from '@/components/layout/TopBar'
 import {
   Brain, Mail, Search, Shield, TrendingUp, Loader2,
   CheckCircle2, Clock, Zap, Database,
-  RefreshCw, AlertCircle, BellRing,
+  RefreshCw, AlertCircle, BellRing, TriangleAlert, Rocket, ExternalLink, Map,
 } from 'lucide-react'
 import { toast } from '@/components/ui/Toast'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
+interface SignalEvent {
+  id: string
+  title: string
+  description: string
+  created_at: string
+  lead_id?: string
+}
+
+interface PenetrationEntry {
+  sector: string
+  country: string
+  count: number
+  highCount: number
+}
+
 interface SistemaData {
   stats: {
     totalLeads: number
@@ -20,7 +35,12 @@ interface SistemaData {
   }
   lastRun: Record<string, string | null>
   recentActivity: { id: string; type: string; title: string; description: string; created_at: string }[]
-  signalEvents: { id: string; title: string; description: string; created_at: string }[]
+  signalEvents: SignalEvent[]
+  // Monitores clasificados
+  recallSignals: SignalEvent[]
+  productLaunchSignals: SignalEvent[]
+  // Mapa de penetración
+  penetrationData: PenetrationEntry[]
 }
 
 type ModuleKey = 'enrichment' | 'sequences' | 'briefing' | 'prospecting' | 'signals'
@@ -366,11 +386,113 @@ export default function SistemaPage() {
         {/* Panel derecho (col 3) */}
         <div className="space-y-4">
 
-          {/* Señales recientes */}
+          {/* ── Monitor de Retiradas — señales compliance/recall ─────────────── */}
+          {/* Filtra automáticamente las señales de tipo "compliance_issue" del cron */}
           <div className="card p-5">
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500 flex items-center gap-1.5">
-                <BellRing className="w-3.5 h-3.5 text-red-500" /> Señales detectadas
+                <TriangleAlert className="w-3.5 h-3.5 text-red-500" /> Monitor de Retiradas
+              </h3>
+              {data?.recallSignals?.length ? (
+                <span className="text-[10px] bg-red-50 text-red-600 border border-red-100 px-1.5 py-0.5 rounded-full font-semibold">
+                  {data.recallSignals.length} alerta{data.recallSignals.length !== 1 ? 's' : ''}
+                </span>
+              ) : null}
+            </div>
+            <p className="text-[10px] text-gray-400 mb-3 leading-relaxed">
+              Detecta retiradas de producto, errores de etiquetado y alertas regulatorias entre tus leads.
+              Un recall reciente es la ventana de venta más potente — actúa antes que la competencia.
+            </p>
+            {loading ? (
+              <div className="flex justify-center py-4"><Loader2 className="w-5 h-5 animate-spin text-gray-300" /></div>
+            ) : !data?.recallSignals?.length ? (
+              <div className="flex items-center gap-2 py-3 text-xs text-gray-400">
+                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                Sin alertas de retiradas detectadas recientemente.
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {data.recallSignals.map(ev => (
+                  <div key={ev.id} className="pb-3 border-b border-red-50 last:border-0 last:pb-0">
+                    <div className="flex items-start justify-between gap-2">
+                      <p className="text-xs font-semibold text-gray-800 leading-tight flex-1">
+                        {ev.title.replace('🎯 Signal at ', '').replace(': Regulatory or labelling compliance issue', '')}
+                      </p>
+                      {ev.lead_id && (
+                        <a href={`/leads/${ev.lead_id}`} className="shrink-0 text-brand-400 hover:text-brand-600">
+                          <ExternalLink className="w-3 h-3" />
+                        </a>
+                      )}
+                    </div>
+                    {ev.description && (
+                      <p className="text-[10px] text-gray-500 mt-0.5 leading-relaxed line-clamp-2">{ev.description}</p>
+                    )}
+                    <div className="flex items-center gap-1.5 mt-1">
+                      <span className="text-[9px] text-red-400 font-semibold uppercase tracking-wide">⚠️ Compliance</span>
+                      <span className="text-[9px] text-gray-300">· {timeAgo(ev.created_at)}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* ── Monitor de Nuevos Lanzamientos — señales product_launch ────────── */}
+          {/* Filtra señales de tipo "product_launch" / "Nueva gama" del cron */}
+          <div className="card p-5">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500 flex items-center gap-1.5">
+                <Rocket className="w-3.5 h-3.5 text-indigo-500" /> Nuevos Lanzamientos
+              </h3>
+              {data?.productLaunchSignals?.length ? (
+                <span className="text-[10px] bg-indigo-50 text-indigo-600 border border-indigo-100 px-1.5 py-0.5 rounded-full font-semibold">
+                  {data.productLaunchSignals.length} señal{data.productLaunchSignals.length !== 1 ? 'es' : ''}
+                </span>
+              ) : null}
+            </div>
+            <p className="text-[10px] text-gray-400 mb-3 leading-relaxed">
+              Detecta cuando un lead lanza un nuevo producto o expande su gama de SKUs.
+              Un lanzamiento significa artes nuevos, nuevas aprobaciones — y una necesidad real de MMC.
+            </p>
+            {loading ? (
+              <div className="flex justify-center py-4"><Loader2 className="w-5 h-5 animate-spin text-gray-300" /></div>
+            ) : !data?.productLaunchSignals?.length ? (
+              <div className="flex items-center gap-2 py-3 text-xs text-gray-400">
+                <Clock className="w-4 h-4 text-gray-300 shrink-0" />
+                Sin señales de lanzamiento detectadas recientemente.
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {data.productLaunchSignals.map(ev => (
+                  <div key={ev.id} className="pb-3 border-b border-indigo-50 last:border-0 last:pb-0">
+                    <div className="flex items-start justify-between gap-2">
+                      <p className="text-xs font-semibold text-gray-800 leading-tight flex-1">
+                        {ev.title.replace('🎯 Signal at ', '').replace(': New product or SKU expansion', '')}
+                      </p>
+                      {ev.lead_id && (
+                        <a href={`/leads/${ev.lead_id}`} className="shrink-0 text-brand-400 hover:text-brand-600">
+                          <ExternalLink className="w-3 h-3" />
+                        </a>
+                      )}
+                    </div>
+                    {ev.description && (
+                      <p className="text-[10px] text-gray-500 mt-0.5 leading-relaxed line-clamp-2">{ev.description}</p>
+                    )}
+                    <div className="flex items-center gap-1.5 mt-1">
+                      <span className="text-[9px] text-indigo-400 font-semibold uppercase tracking-wide">🚀 Lanzamiento</span>
+                      <span className="text-[9px] text-gray-300">· {timeAgo(ev.created_at)}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* ── Señales generales ──────────────────────────────────────────────── */}
+          <div className="card p-5">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500 flex items-center gap-1.5">
+                <BellRing className="w-3.5 h-3.5 text-red-500" /> Otras señales detectadas
               </h3>
               {data?.signalEvents?.length ? (
                 <span className="text-[10px] bg-red-50 text-red-600 border border-red-100 px-1.5 py-0.5 rounded-full font-semibold">
@@ -428,6 +550,124 @@ export default function SistemaPage() {
             )}
           </div>
 
+        </div>
+      </div>
+
+      {/* ── Mapa de Penetración por Sector ─────────────────────────────────── */}
+      {/* Visualiza la distribución de leads por sector x país como una matriz */}
+      {/* Permite identificar sectores saturados vs. sin explotar en el pipeline */}
+      <div className="px-6 pb-6">
+        <div className="card p-5">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h3 className="text-sm font-bold text-gray-900 flex items-center gap-2">
+                <Map className="w-4 h-4 text-brand-500" />
+                Mapa de Penetración por Sector
+              </h3>
+              <p className="text-[10px] text-gray-400 mt-0.5">
+                Distribución de leads en el CRM por sector e industria — identifica dónde has penetrado más y dónde queda mercado
+              </p>
+            </div>
+          </div>
+
+          {loading ? (
+            <div className="flex justify-center py-8"><Loader2 className="w-5 h-5 animate-spin text-gray-300" /></div>
+          ) : !data?.penetrationData?.length ? (
+            <div className="text-center py-8 text-xs text-gray-400">
+              <Map className="w-8 h-8 mx-auto mb-2 opacity-30" />
+              <p>Sin datos de sector disponibles. Enriquece tus leads para poblar el mapa.</p>
+            </div>
+          ) : (() => {
+            // Calcular el máximo para la escala visual
+            const maxCount = Math.max(...data.penetrationData.map(e => e.count))
+
+            // Agrupar por sector para el sumario lateral
+            const bySector: Record<string, { count: number; highCount: number; countries: string[] }> = {}
+            for (const e of data.penetrationData) {
+              if (!bySector[e.sector]) bySector[e.sector] = { count: 0, highCount: 0, countries: [] }
+              bySector[e.sector].count += e.count
+              bySector[e.sector].highCount += e.highCount
+              if (!bySector[e.sector].countries.includes(e.country)) {
+                bySector[e.sector].countries.push(e.country)
+              }
+            }
+            const topSectors = Object.entries(bySector)
+              .sort(([, a], [, b]) => b.count - a.count)
+              .slice(0, 8)
+
+            return (
+              <div className="grid lg:grid-cols-3 gap-6">
+
+                {/* Barras por sector — columna principal */}
+                <div className="lg:col-span-2 space-y-3">
+                  {topSectors.map(([sector, info]) => {
+                    const pct = Math.round((info.count / maxCount) * 100)
+                    const highPct = info.count > 0 ? Math.round((info.highCount / info.count) * 100) : 0
+                    const barColor = pct >= 70 ? '#6366f1' : pct >= 40 ? '#f59e0b' : '#10b981'
+                    return (
+                      <div key={sector}>
+                        <div className="flex items-center justify-between mb-1">
+                          <div className="flex items-center gap-2 min-w-0 flex-1">
+                            <span className="text-xs font-semibold text-gray-800 truncate">{sector}</span>
+                            <span className="text-[10px] text-gray-400 shrink-0">
+                              {info.countries.slice(0, 3).join(' · ')}
+                              {info.countries.length > 3 && ` +${info.countries.length - 3}`}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2 shrink-0 ml-2">
+                            {highPct > 0 && (
+                              <span className="text-[9px] font-semibold text-indigo-500">
+                                {highPct}% alta prioridad
+                              </span>
+                            )}
+                            <span className="text-xs font-bold text-gray-700">{info.count}</span>
+                          </div>
+                        </div>
+                        <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
+                          <div className="h-full rounded-full relative" style={{ width: `${pct}%`, background: barColor }}>
+                            {/* Indicador de alta prioridad superpuesto */}
+                            {highPct > 0 && (
+                              <div
+                                className="absolute right-0 top-0 bottom-0 rounded-r-full"
+                                style={{ width: `${highPct}%`, background: 'rgba(255,255,255,0.35)' }}
+                              />
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+
+                {/* Tabla sector × país — columna derecha */}
+                <div>
+                  <p className="text-[10px] font-semibold uppercase tracking-widest text-gray-400 mb-2">
+                    Top combinaciones sector/país
+                  </p>
+                  <div className="space-y-1.5">
+                    {data.penetrationData.slice(0, 8).map((e, i) => (
+                      <div key={i} className="flex items-center justify-between py-1.5 px-2 rounded-lg hover:bg-gray-50 transition-colors">
+                        <div className="min-w-0 flex-1">
+                          <p className="text-xs font-medium text-gray-700 truncate">{e.sector}</p>
+                          <p className="text-[10px] text-gray-400">{e.country}</p>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0 ml-2">
+                          {e.highCount > 0 && (
+                            <span className="text-[9px] text-indigo-500 font-semibold">{e.highCount}★</span>
+                          )}
+                          <span className="text-xs font-bold text-gray-800 min-w-[20px] text-right">{e.count}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="text-[9px] text-gray-300 mt-3">
+                    ★ leads de alta prioridad · Actualizado en tiempo real
+                  </p>
+                </div>
+
+              </div>
+            )
+          })()}
         </div>
       </div>
 

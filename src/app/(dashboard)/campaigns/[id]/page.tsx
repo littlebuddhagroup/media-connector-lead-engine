@@ -1,5 +1,23 @@
 'use client'
 
+// Sectores ICP de MyMediaConnect — empresas con packaging, artwork y gestión de etiquetado
+const MMC_SECTORS = [
+  'Alimentación y bebidas FMCG',
+  'Pharma y parafarmacia OTC',
+  'Cosmética y cuidado personal',
+  'Retail y marca del distribuidor (MDD)',
+  'Vinos y licores',
+  'Lácteos y frescos',
+  'Snacks y confitería',
+  'Bebidas refrescantes',
+  'Suplementos y nutrición',
+  'Productos de limpieza y hogar',
+  'Mascotas (pet care)',
+  'Electrónica de consumo',
+  'Químico / Industrial con marca propia',
+  'Otro',
+]
+
 import { useState, useEffect, useCallback } from 'react'
 import RichTextEditor from '@/components/ui/RichTextEditor'
 import { useParams, useRouter } from 'next/navigation'
@@ -10,7 +28,7 @@ import {
   Plus, Search, Trash2, Send, ChevronRight, ChevronLeft, BarChart3, FileText,
   Settings, Loader2, CheckCircle, XCircle, Play, Pause,
   Star, Clock, Check, Save, Edit2, Mails, Copy, Sparkles, AlertTriangle,
-  CalendarClock, ChevronDown, ChevronUp
+  CalendarClock, ChevronDown, ChevronUp, ArrowDownToLine
 } from 'lucide-react'
 import { toast } from '@/components/ui/Toast'
 import { statusLabel, statusColor, priorityColor, scoreToBg, formatDate, formatDateRelative, htmlToText, textToHtml } from '@/lib/utils'
@@ -175,9 +193,25 @@ export default function CampaignDetailPage() {
   const [seqModalStep, setSeqModalStep] = useState<'info' | 'preview'>('info')
   const [seqPreviewSteps, setSeqPreviewSteps] = useState<TemplateStep[]>([])
   const [expandedSeqStep, setExpandedSeqStep] = useState<number>(1)
+  const [seqPreviewBodyMode, setSeqPreviewBodyMode] = useState<Record<number, 'edit' | 'preview'>>({ 1: 'preview' })
   const [seqUseEmojis, setSeqUseEmojis] = useState(false)
   const [seqLanguage, setSeqLanguage] = useState('es')
+  const [seqTotalSteps, setSeqTotalSteps] = useState<3 | 5>(3)
   const [launchingFromModal, setLaunchingFromModal] = useState(false)
+
+  // Lusha
+  const [lushaConnected, setLushaConnected] = useState<boolean | null>(null)
+  const [lushaEnriching, setLushaEnriching] = useState(false)
+  const [showLushaModal, setShowLushaModal] = useState(false)
+  const [lushaSearching, setLushaSearching] = useState(false)
+  const [lushaImporting, setLushaImporting] = useState(false)
+  const [lushaProspects, setLushaProspects] = useState<Array<{ firstName?: string; lastName?: string; email?: string; phone?: string; jobTitle?: string; company?: string; companyDomain?: string; linkedin?: string; country?: string; sector?: string }>>([])
+  const [lushaFilters, setLushaFilters] = useState({ jobTitles: '', industries: '', countries: '', companyNames: '', companyDomains: '', limit: 25 })
+  const [prospectStates, setProspectStates] = useState<Record<number, { importing?: boolean; enriching?: boolean; imported?: boolean; leadId?: string }>>({})
+
+  const setProspectState = (idx: number, patch: Record<string, unknown>) =>
+    setProspectStates(prev => ({ ...prev, [idx]: { ...prev[idx], ...patch } }))
+  const [lushaLastResult, setLushaLastResult] = useState<string | null>(null)
 
   // Cancelar / borrar secuencia
   const [cancellingSeq, setCancellingSeq] = useState<string | null>(null)
@@ -233,25 +267,23 @@ export default function CampaignDetailPage() {
   const [applyingBulk, setApplyingBulk] = useState(false)
   const [deletingAllSeqs, setDeletingAllSeqs] = useState(false)
 
-  // Genera los 3 emails en el modal de secuencia de campaña
+  // Genera los emails en el modal de secuencia de campaña (3 o 5 toques)
   const handleGenerateCampaignPreview = async () => {
-    const tones = ['consultivo', 'directo', 'cercano']
     setGeneratingTemplate(true)
     const res = await fetch(`/api/campaigns/${id}/templates/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tones, useEmojis: seqUseEmojis, language: seqLanguage }),
+      body: JSON.stringify({ useEmojis: seqUseEmojis, language: seqLanguage, total_steps: seqTotalSteps }),
     })
     const json = await res.json()
     setGeneratingTemplate(false)
     if (res.ok && Array.isArray(json.data)) {
       const now = new Date()
-      const delayDays = [1, 5, 10]
+      const delayDays = seqTotalSteps === 5 ? [0, 4, 8, 13, 18] : [0, 5, 10]
       const steps: TemplateStep[] = json.data.map((s: TemplateStep, i: number) => {
         const d = new Date(now)
-        d.setDate(d.getDate() + delayDays[i])
+        d.setDate(d.getDate() + (delayDays[i] ?? 0))
         d.setHours(9, 0, 0, 0)
-        // datetime-local format: "YYYY-MM-DDTHH:MM"
         const pad = (n: number) => String(n).padStart(2, '0')
         const scheduled_for = `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T09:00`
         return {
@@ -265,6 +297,7 @@ export default function CampaignDetailPage() {
       })
       setSeqPreviewSteps(steps)
       setExpandedSeqStep(1)
+      setSeqPreviewBodyMode(Object.fromEntries(steps.map(s => [s.step_number, 'preview' as const])))
       setSeqModalStep('preview')
     } else {
       toast.error('Error IA', json.error ?? 'No se pudo generar la secuencia.')
@@ -276,7 +309,7 @@ export default function CampaignDetailPage() {
     setSavingTemplate(true)
     const payload = {
       id: editingTemplate?.id ?? '',
-      name: 'Secuencia 3 Toques',
+      name: `Secuencia ${seqTotalSteps} Toques`,
       description: '',
       steps: seqPreviewSteps.map(s => ({
         ...s,
@@ -295,7 +328,7 @@ export default function CampaignDetailPage() {
       fetchAll()
       setShowSeqModal(false)
       setSeqModalStep('info')
-      toast.success('Secuencia guardada', 'Los 3 toques se usarán al lanzar secuencias en bloque.')
+      toast.success('Secuencia guardada', `Los ${seqTotalSteps} toques se usarán al lanzar secuencias en bloque.`)
     } else {
       const j = await res.json()
       toast.error('Error', j.error)
@@ -308,7 +341,7 @@ export default function CampaignDetailPage() {
     // 1. Guardar plantilla
     const payload = {
       id: editingTemplate?.id ?? '',
-      name: 'Secuencia 3 Toques',
+      name: `Secuencia ${seqTotalSteps} Toques`,
       description: '',
       steps: seqPreviewSteps.map(s => ({
         ...s,
@@ -326,7 +359,7 @@ export default function CampaignDetailPage() {
     const res = await fetch(`/api/campaigns/${id}/launch-sequences`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ accounts: launchAccounts.length ? launchAccounts : undefined, language: seqLanguage }),
+      body: JSON.stringify({ accounts: launchAccounts.length ? launchAccounts : undefined, language: seqLanguage, total_steps: seqTotalSteps }),
     })
     const json = await res.json()
     setLaunchingFromModal(false)
@@ -499,7 +532,7 @@ export default function CampaignDetailPage() {
     } else {
       setEditingTemplate({
         id: '',
-        name: 'Secuencia 3 Toques',
+        name: 'Secuencia',
         steps: [
           { step_number: 1, subject: '', body: '', delay_days: 0, tone: 'consultivo' },
           { step_number: 2, subject: '', body: '', delay_days: 5, tone: 'directo' },
@@ -584,7 +617,7 @@ export default function CampaignDetailPage() {
     setSavingTemplate(true)
     const payload = {
       ...editingTemplate,
-      name: 'Secuencia 3 Toques', // Siempre guardamos con este nombre canónico
+      name: editingTemplate.name || 'Secuencia',
     }
     const res = await fetch(`/api/campaigns/${id}/templates`, {
       method: 'POST',
@@ -594,11 +627,172 @@ export default function CampaignDetailPage() {
     setSavingTemplate(false)
     if (res.ok) {
       fetchAll()
-      toast.success('Secuencia guardada', 'Los 3 toques se usarán al lanzar secuencias en bloque.')
+      toast.success('Secuencia guardada', 'La plantilla se usará al lanzar secuencias en bloque.')
     } else {
       const json = await res.json()
       toast.error('Error', json.error)
     }
+  }
+
+  // ── Lusha ──────────────────────────────────────────────────
+  useEffect(() => {
+    fetch('/api/lusha')
+      .then(r => r.json())
+      .then(j => setLushaConnected(j.connected === true))
+      .catch(() => setLushaConnected(false))
+  }, [])
+
+  const handleLushaEnrichCampaign = async () => {
+    if (!confirm(`¿Enriquecer con Lusha todos los leads de esta campaña que falten email o teléfono? Esto consumirá créditos.`)) return
+    setLushaEnriching(true)
+    setLushaLastResult(null)
+    const res = await fetch('/api/lusha/enrich', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ campaign_id: id }),
+    })
+    const json = await res.json()
+    setLushaEnriching(false)
+    if (res.ok) {
+      const msg = `✅ Enriquecidos: ${json.enriched} · No encontrados: ${json.not_found} · Ya completos: ${json.skipped}`
+      setLushaLastResult(msg)
+      toast.success('Enriquecimiento Lusha completado', json.message)
+      fetchAll()
+    } else {
+      toast.error('Error Lusha', json.error)
+    }
+  }
+
+  const buildLushaFilters = () => ({
+    jobTitles: lushaFilters.jobTitles ? lushaFilters.jobTitles.split(',').map(s => s.trim()).filter(Boolean) : undefined,
+    industries: lushaFilters.industries ? lushaFilters.industries.split(',').map(s => s.trim()).filter(Boolean) : undefined,
+    countries: lushaFilters.countries ? lushaFilters.countries.split(',').map(s => s.trim()).filter(Boolean) : (campaign?.country ? [campaign.country] : undefined),
+    companyNames: lushaFilters.companyNames ? lushaFilters.companyNames.split(',').map(s => s.trim()).filter(Boolean) : undefined,
+    companyDomains: lushaFilters.companyDomains ? lushaFilters.companyDomains.split(',').map(s => s.trim().replace('@', '')).filter(Boolean) : undefined,
+    limit: lushaFilters.limit,
+  })
+
+  const handleLushaSearch = async () => {
+    setLushaSearching(true)
+    setLushaProspects([])
+    setProspectStates({})
+    try {
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), 25000)
+      const res = await fetch('/api/lusha/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(buildLushaFilters()),
+        signal: controller.signal,
+      })
+      clearTimeout(timer)
+      const json = await res.json()
+      if (res.ok) {
+        setLushaProspects(json.prospects ?? [])
+        if (!json.found) toast.warning('Sin resultados', 'Prueba con otros filtros: empresa, dominio, cargo o sector.')
+      } else {
+        toast.error('Error Lusha', json.error)
+      }
+    } catch (err) {
+      if ((err as Error).name === 'AbortError') {
+        toast.error('Tiempo agotado', 'Lusha tardó demasiado. Prueba con filtros más específicos.')
+      } else {
+        toast.error('Error de conexión', 'No se pudo conectar con Lusha.')
+      }
+    } finally {
+      setLushaSearching(false)
+    }
+  }
+
+  const handleLushaImport = async () => {
+    setLushaImporting(true)
+    const filters = {
+      ...buildLushaFilters(),
+      campaign_id: id,
+      import: true,
+    }
+    const res = await fetch('/api/lusha/search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(filters),
+    })
+    const json = await res.json()
+    setLushaImporting(false)
+    if (res.ok) {
+      toast.success(`Importados ${json.imported} prospectos`, json.message)
+      setShowLushaModal(false)
+      fetchAll()
+    } else {
+      toast.error('Error Lusha', json.error)
+    }
+  }
+
+  const handleImportSingleProspect = async (prospect: typeof lushaProspects[0], idx: number) => {
+    setProspectState(idx, { importing: true })
+    const res = await fetch('/api/lusha/search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...buildLushaFilters(),
+        campaign_id: id,
+        import: true,
+        direct_prospects: [prospect],
+      }),
+    })
+    const json = await res.json()
+    if (res.ok && json.imported > 0) {
+      setProspectState(idx, { importing: false, imported: true, leadId: json.lead_ids?.[0] })
+      fetchAll()
+    } else {
+      setProspectState(idx, { importing: false })
+      toast.warning('Prospecto duplicado', 'Este lead ya existe en la campaña.')
+    }
+  }
+
+  const handleEnrichSingleProspect = async (prospect: typeof lushaProspects[0], idx: number) => {
+    setProspectState(idx, { enriching: true })
+    // 1. Importar
+    const importRes = await fetch('/api/lusha/search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...buildLushaFilters(),
+        campaign_id: id,
+        import: true,
+        direct_prospects: [prospect],
+      }),
+    })
+    const importJson = await importRes.json()
+    const leadId = importJson.lead_ids?.[0]
+
+    if (!leadId) {
+      setProspectState(idx, { enriching: false, imported: importJson.imported === 0 })
+      if (importJson.imported === 0) toast.warning('Prospecto duplicado', 'Ya existe en la campaña.')
+      return
+    }
+
+    // 2. Enriquecer con la cadena completa (SerpAPI + Hunter + IA)
+    await fetch(`/api/leads/${leadId}/enrich`, { method: 'POST' })
+
+    // 3. Recargar el lead enriquecido y actualizar el prospecto en lista
+    const leadRes = await fetch(`/api/leads/${leadId}`)
+    const leadJson = await leadRes.json()
+    const enriched = leadJson.data ?? leadJson
+
+    setLushaProspects(prev => prev.map((p, i) => i === idx ? {
+      ...p,
+      firstName: enriched.first_name ?? p.firstName,
+      lastName: enriched.last_name ?? p.lastName,
+      email: enriched.email ?? p.email,
+      phone: enriched.phone ?? p.phone,
+      linkedin: enriched.linkedin_url ?? p.linkedin,
+    } : p))
+
+    setProspectState(idx, { enriching: false, imported: true, leadId })
+    fetchAll()
+    toast.success('Prospecto enriquecido', enriched.email
+      ? `Email encontrado: ${enriched.email}`
+      : 'Importado. Enriquecimiento completado.')
   }
 
   const handleBulkLaunch = async () => {
@@ -607,7 +801,7 @@ export default function CampaignDetailPage() {
       const res = await fetch(`/api/campaigns/${id}/launch-sequences`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ accounts: launchAccounts, language: seqLanguage }),
+        body: JSON.stringify({ accounts: launchAccounts, language: seqLanguage, total_steps: seqTotalSteps }),
       })
       const json = await res.json()
       if (!res.ok) { toast.error('Error al lanzar', json.error); return }
@@ -650,20 +844,21 @@ export default function CampaignDetailPage() {
   }
 
   const handleGenerateTemplate = async () => {
+    const stepDelays = seqTotalSteps === 5 ? [0, 4, 8, 13, 18] : [0, 5, 10]
+    const defaultSteps = Array.from({ length: seqTotalSteps }, (_, i) => ({
+      step_number: i + 1, subject: '', body: '',
+      delay_days: stepDelays[i],
+      tone: ['consultivo', 'directo', 'cercano', 'formal', 'directo'][i] as string,
+    }))
     const currentTemplate = editingTemplate ?? {
-      id: '', name: 'Secuencia 3 Toques',
-      steps: [
-        { step_number: 1, subject: '', body: '', delay_days: 0, tone: 'consultivo' },
-        { step_number: 2, subject: '', body: '', delay_days: 5, tone: 'directo' },
-        { step_number: 3, subject: '', body: '', delay_days: 10, tone: 'cercano' },
-      ]
+      id: '', name: `Secuencia ${seqTotalSteps} Toques`, steps: defaultSteps,
     }
     setGeneratingTemplate(true)
     const tones = currentTemplate.steps.map(s => s.tone)
     const res = await fetch(`/api/campaigns/${id}/templates/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tones }),
+      body: JSON.stringify({ tones, total_steps: seqTotalSteps }),
     })
     const json = await res.json()
     setGeneratingTemplate(false)
@@ -672,15 +867,17 @@ export default function CampaignDetailPage() {
         const base = t ?? currentTemplate
         return {
           ...base,
-          name: 'Secuencia 3 Toques',
+          name: `Secuencia ${seqTotalSteps} Toques`,
           steps: json.data.map((s: TemplateStep, i: number) => ({
-            ...base.steps[i],
+            ...(base.steps[i] ?? {}),
             subject: s.subject,
             body: s.body,
+            delay_days: s.delay_days,
+            tone: s.tone,
           }))
         }
       })
-      toast.success('Secuencia generada', 'Revisa los 3 emails y pulsa Guardar cuando estés listo.')
+      toast.success('Secuencia generada', `Revisa los ${seqTotalSteps} emails y pulsa Guardar cuando estés listo.`)
     } else {
       toast.error('Error IA', json.error ?? 'No se pudo generar la secuencia.')
     }
@@ -1259,11 +1456,31 @@ ${noActivity.map(r => personRow(r, '#fff')).join('')}
                     <Link href={`/leads?campaign=${id}`} className="btn-secondary text-xs py-1.5">
                       <Users className="w-3.5 h-3.5" /> Ver leads
                     </Link>
+                    {lushaConnected && (
+                      <>
+                        <button
+                          onClick={handleLushaEnrichCampaign}
+                          disabled={lushaEnriching}
+                          className="btn-secondary text-xs py-1.5"
+                          title="Busca email y teléfono para los leads sin datos de contacto"
+                        >
+                          {lushaEnriching ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                          {lushaEnriching ? 'Enriqueciendo...' : 'Enriquecer con Lusha'}
+                        </button>
+                        <button
+                          onClick={() => { setShowLushaModal(true); setLushaProspects([]); setLushaLastResult(null) }}
+                          className="btn-secondary text-xs py-1.5"
+                          title="Busca nuevos prospectos en Lusha e impórtalos como leads"
+                        >
+                          <Search className="w-3.5 h-3.5" /> Prospectos Lusha
+                        </button>
+                      </>
+                    )}
                     <button
                       onClick={() => { setSeqModalStep('info'); setSeqPreviewSteps([]); setShowSeqModal(true) }}
                       className="btn-primary text-xs py-1.5"
                     >
-                      <Sparkles className="w-3.5 h-3.5" /> Iniciar secuencia 3 toques
+                      <Sparkles className="w-3.5 h-3.5" /> Iniciar secuencia de 3 o 5 toques
                     </button>
                   </div>
                 </div>
@@ -1316,7 +1533,7 @@ ${noActivity.map(r => personRow(r, '#fff')).join('')}
                   <div className="py-10 text-center">
                     <Mails className="w-10 h-10 text-gray-200 mx-auto mb-3" />
                     <p className="text-sm text-gray-500">No hay secuencias iniciadas en esta campaña.</p>
-                    <p className="text-xs text-gray-400 mt-1">Pulsa "Iniciar secuencia 3 toques" para generar y revisar los emails antes de enviarlos.</p>
+                    <p className="text-xs text-gray-400 mt-1">Pulsa "Iniciar secuencia de 3 o 5 toques" para elegir el formato y revisar los emails antes de enviarlos.</p>
                   </div>
                 ) : (
                   <div className="space-y-3">
@@ -1820,7 +2037,10 @@ ${noActivity.map(r => personRow(r, '#fff')).join('')}
                     </div>
                     <div>
                       <label className="label">Sector objetivo</label>
-                      <input className="input" value={editSettings.sector ?? ''} onChange={e => setEditSettings(s => ({...s, sector: e.target.value}))} />
+                      <select className="input" value={editSettings.sector ?? ''} onChange={e => setEditSettings(s => ({...s, sector: e.target.value}))}>
+                        <option value="">— Seleccionar sector ICP —</option>
+                        {MMC_SECTORS.map(s => <option key={s} value={s}>{s}</option>)}
+                      </select>
                     </div>
                   </div>
                   <div>
@@ -1885,6 +2105,203 @@ ${noActivity.map(r => personRow(r, '#fff')).join('')}
         </div>
       </div>
 
+      {/* ═══ Modal: Prospectos Lusha ═══ */}
+      <Modal
+        isOpen={showLushaModal}
+        onClose={() => setShowLushaModal(false)}
+        title="Buscar prospectos en Lusha"
+        size="lg"
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-gray-500">
+            Busca nuevos contactos B2B en la base de datos de Lusha. Los prospectos encontrados se importarán como leads en esta campaña.
+          </p>
+
+          {/* Filtros */}
+          <div className="grid grid-cols-2 gap-3">
+            {/* Fila 1: empresa + dominio */}
+            <div>
+              <label className="block text-xs font-medium text-gray-700 mb-1">
+                🏢 Empresa (separadas por coma)
+              </label>
+              <input
+                className="input text-sm w-full"
+                placeholder="Coca-Cola, Nestlé, Danone"
+                value={lushaFilters.companyNames}
+                onChange={e => setLushaFilters(f => ({ ...f, companyNames: e.target.value }))}
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-700 mb-1">
+                📧 Dominio de email (separados por coma)
+              </label>
+              <input
+                className="input text-sm w-full"
+                placeholder="coca-cola.com, nestle.com"
+                value={lushaFilters.companyDomains}
+                onChange={e => setLushaFilters(f => ({ ...f, companyDomains: e.target.value }))}
+              />
+            </div>
+            {/* Fila 2: cargos + sectores */}
+            <div>
+              <label className="block text-xs font-medium text-gray-700 mb-1">Cargos (separados por coma)</label>
+              <input
+                className="input text-sm w-full"
+                placeholder="CMO, Marketing Manager, Brand Manager"
+                value={lushaFilters.jobTitles}
+                onChange={e => setLushaFilters(f => ({ ...f, jobTitles: e.target.value }))}
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-700 mb-1">Sectores (separados por coma)</label>
+              <input
+                className="input text-sm w-full"
+                placeholder="FMCG, Consumer Goods, Food"
+                value={lushaFilters.industries}
+                onChange={e => setLushaFilters(f => ({ ...f, industries: e.target.value }))}
+              />
+            </div>
+            {/* Fila 3: países + máx. resultados */}
+            <div>
+              <label className="block text-xs font-medium text-gray-700 mb-1">Países <span className="text-gray-400 font-normal">(en inglés, separados por coma)</span></label>
+              <input
+                className="input text-sm w-full"
+                placeholder="Spain, France, Germany"
+                value={lushaFilters.countries}
+                onChange={e => setLushaFilters(f => ({ ...f, countries: e.target.value }))}
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-700 mb-1">Máx. resultados</label>
+              <select
+                className="input text-sm w-full"
+                value={lushaFilters.limit}
+                onChange={e => setLushaFilters(f => ({ ...f, limit: Number(e.target.value) }))}
+              >
+                <option value={10}>10</option>
+                <option value={25}>25</option>
+                <option value={50}>50</option>
+                <option value={100}>100</option>
+              </select>
+            </div>
+          </div>
+          <p className="text-xs text-gray-400">
+            💡 Usa nombres en inglés y con mayúsculas correctas: <strong>Spain</strong> no "españa", <strong>Danone</strong> no "danone". Empresa y dominio son los filtros más potentes.
+          </p>
+
+          {/* Botón buscar */}
+          <button
+            type="button"
+            onClick={handleLushaSearch}
+            disabled={lushaSearching}
+            className="btn-secondary text-sm"
+          >
+            {lushaSearching ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
+            {lushaSearching ? 'Buscando...' : 'Buscar en Lusha'}
+          </button>
+
+          {/* Resultados */}
+          {lushaProspects.length > 0 && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <p className="text-xs font-medium text-gray-700">{lushaProspects.length} prospectos encontrados</p>
+                <button
+                  type="button"
+                  onClick={handleLushaImport}
+                  disabled={lushaImporting}
+                  className="btn-secondary text-xs py-1"
+                >
+                  {lushaImporting ? <Loader2 className="w-3 h-3 animate-spin" /> : <ArrowDownToLine className="w-3 h-3" />}
+                  {lushaImporting ? 'Importando...' : `Importar todos (${lushaProspects.length})`}
+                </button>
+              </div>
+
+              <div className="max-h-[420px] overflow-y-auto space-y-2">
+                {lushaProspects.map((p, i) => {
+                  const name = [p.firstName, p.lastName].filter(Boolean).join(' ')
+                  const company = p.company || lushaFilters.companyNames.split(',')[0]?.trim() || '—'
+                  const isPartial = !name && !p.email
+                  const state = prospectStates[i] ?? {}
+
+                  return (
+                    <div key={i} className={`border rounded-xl p-3 text-xs transition-all ${
+                      state.imported ? 'border-green-200 bg-green-50/40' :
+                      isPartial ? 'border-amber-100 bg-amber-50/30' :
+                      'border-gray-100 bg-white'
+                    }`}>
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex-1 min-w-0">
+                          {/* Nombre y empresa */}
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            {name
+                              ? <span className="font-semibold text-gray-900">{name}</span>
+                              : <span className="italic text-gray-400">Nombre oculto</span>
+                            }
+                            <span className="text-gray-400">·</span>
+                            <span className="font-medium text-gray-700">{company}</span>
+                            {state.imported && <span className="text-green-600 bg-green-100 px-1.5 py-0.5 rounded text-[10px] font-medium">✓ Importado</span>}
+                            {isPartial && !state.imported && <span className="text-amber-500 bg-amber-50 px-1.5 py-0.5 rounded text-[10px]">parcial</span>}
+                          </div>
+
+                          {/* Cargo y país */}
+                          <p className="text-gray-500 mt-0.5">
+                            {p.jobTitle ?? ''}
+                            {p.jobTitle && p.country ? ' · ' : ''}
+                            {p.country ?? ''}
+                          </p>
+
+                          {/* Contacto */}
+                          {p.email && <p className="text-brand-600 mt-0.5">{p.email}</p>}
+                          {p.phone && <p className="text-gray-500">{p.phone}</p>}
+                        </div>
+
+                        {/* Acciones */}
+                        {!state.imported && (
+                          <div className="flex flex-col gap-1 shrink-0">
+                            <button
+                              onClick={() => handleEnrichSingleProspect(p, i)}
+                              disabled={state.enriching || state.importing}
+                              className="btn-primary text-[11px] py-1 px-2 whitespace-nowrap"
+                              title="Importa y enriquece automáticamente para revelar nombre y contacto"
+                            >
+                              {state.enriching
+                                ? <><Loader2 className="w-3 h-3 animate-spin" /> Buscando...</>
+                                : <><Sparkles className="w-3 h-3" /> Enriquecer</>
+                              }
+                            </button>
+                            <button
+                              onClick={() => handleImportSingleProspect(p, i)}
+                              disabled={state.importing || state.enriching}
+                              className="btn-secondary text-[11px] py-1 px-2 whitespace-nowrap"
+                              title="Importar sin enriquecer"
+                            >
+                              {state.importing
+                                ? <><Loader2 className="w-3 h-3 animate-spin" /> Importando...</>
+                                : <><ArrowDownToLine className="w-3 h-3" /> Importar</>
+                              }
+                            </button>
+                          </div>
+                        )}
+                        {state.imported && state.leadId && (
+                          <a
+                            href={`/leads/${state.leadId}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-brand-600 hover:underline text-[11px] shrink-0"
+                          >
+                            Ver lead →
+                          </a>
+                        )}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      </Modal>
+
       {/* ═══ Modal: Lanzar secuencias en bloque ═══ */}
       <Modal
         isOpen={showLaunchModal}
@@ -1896,11 +2313,11 @@ ${noActivity.map(r => personRow(r, '#fff')).join('')}
           {templates.length > 0 ? (
             <div className="p-3 bg-green-50 border border-green-100 rounded-xl text-xs text-green-700 flex items-start gap-2">
               <CheckCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-              <span>Se usará la <strong>secuencia de 3 toques guardada</strong> para todos los leads. El contenido se personalizará automáticamente con el nombre y sector de cada empresa.</span>
+              <span>Se usará la <strong>secuencia de {seqTotalSteps} toques guardada</strong> para todos los leads. El contenido se personalizará automáticamente con el nombre y sector de cada empresa.</span>
             </div>
           ) : (
             <div className="p-3 bg-brand-50 border border-brand-100 rounded-xl text-xs text-brand-700">
-              No hay secuencia guardada — se generará el contenido con IA para cada lead individualmente. Para más velocidad y control, guarda primero la secuencia en la pestaña "3 Toques".
+              No hay secuencia guardada — se generará el contenido con IA para cada lead individualmente. Para más velocidad y control, guarda primero la secuencia en la pestaña "{seqTotalSteps} Toques".
             </div>
           )}
 
@@ -1932,6 +2349,27 @@ ${noActivity.map(r => personRow(r, '#fff')).join('')}
                 Los leads se repartirán entre {launchAccounts.length} cuentas de forma rotatoria (1 de cada {launchAccounts.length}).
               </p>
             )}
+          </div>
+
+          {/* Selector 3 o 5 toques para lanzamiento en bloque */}
+          <div>
+            <label className="label">Número de toques</label>
+            <div className="grid grid-cols-2 gap-2 mt-1">
+              <button
+                onClick={() => setSeqTotalSteps(3)}
+                className={`p-2.5 rounded-lg border-2 text-left transition-all ${seqTotalSteps === 3 ? 'border-brand-500 bg-brand-50' : 'border-gray-200 hover:border-gray-300'}`}
+              >
+                <div className="text-xs font-bold text-gray-800">3 toques</div>
+                <div className="text-xs text-gray-500">Días 0 · 5 · 10</div>
+              </button>
+              <button
+                onClick={() => setSeqTotalSteps(5)}
+                className={`p-2.5 rounded-lg border-2 text-left transition-all ${seqTotalSteps === 5 ? 'border-brand-500 bg-brand-50' : 'border-gray-200 hover:border-gray-300'}`}
+              >
+                <div className="text-xs font-bold text-gray-800">5 toques</div>
+                <div className="text-xs text-gray-500">Días 0 · 4 · 8 · 13 · 18</div>
+              </button>
+            </div>
           </div>
 
           <div className="p-3 bg-amber-50 border border-amber-100 rounded-xl text-xs text-amber-700">
@@ -2039,7 +2477,7 @@ ${noActivity.map(r => personRow(r, '#fff')).join('')}
       <Modal
         isOpen={showSeqModal}
         onClose={() => { setShowSeqModal(false); setSeqModalStep('info'); setSeqPreviewSteps([]) }}
-        title={seqModalStep === 'info' ? 'Secuencia 3 toques — Campaña' : 'Revisar y editar emails de la secuencia'}
+        title={seqModalStep === 'info' ? `Secuencia ${seqTotalSteps} toques — Campaña` : 'Revisar y editar emails de la secuencia'}
         size="lg"
       >
         {seqModalStep === 'info' ? (
@@ -2048,11 +2486,22 @@ ${noActivity.map(r => personRow(r, '#fff')).join('')}
               <p className="font-medium">¿Cómo funciona la secuencia de campaña?</p>
               <ul className="text-xs space-y-1 text-brand-700">
                 <li>📧 <strong>Email 1</strong> — Se programa para el día siguiente a las 9:00 (o cuando elijas)</li>
-                <li>📧 <strong>Email 2</strong> — Se programa automáticamente 5 días después</li>
-                <li>📧 <strong>Email 3</strong> — Se programa automáticamente 10 días después</li>
+                {seqTotalSteps === 5 ? (
+                  <>
+                    <li>📧 <strong>Email 2</strong> — Se programa automáticamente 4 días después</li>
+                    <li>📧 <strong>Email 3</strong> — Se programa automáticamente 8 días después</li>
+                    <li>📧 <strong>Email 4</strong> — Se programa automáticamente 13 días después</li>
+                    <li>📧 <strong>Email 5</strong> — Se programa automáticamente 18 días después</li>
+                  </>
+                ) : (
+                  <>
+                    <li>📧 <strong>Email 2</strong> — Se programa automáticamente 5 días después</li>
+                    <li>📧 <strong>Email 3</strong> — Se programa automáticamente 10 días después</li>
+                  </>
+                )}
               </ul>
               <p className="text-xs text-brand-600 mt-2">
-                La IA generará los 3 emails usando el mismo sistema que las secuencias individuales.
+                La IA generará los {seqTotalSteps} emails usando el mismo sistema que las secuencias individuales.
                 Podrás revisarlos, editarlos y ajustar la fecha de cada uno antes de guardar como plantilla.
                 Al lanzar la campaña, se usará esta plantilla personalizada para cada lead.
               </p>
@@ -2084,6 +2533,19 @@ ${noActivity.map(r => personRow(r, '#fff')).join('')}
                 <option value="nl">🇳🇱 Nederlands</option>
                 <option value="ca">🇪🇸 Català</option>
               </select>
+              {/* Selector 3 o 5 toques */}
+              <div className="flex items-center gap-1 border border-gray-200 rounded-lg overflow-hidden text-xs">
+                <button
+                  onClick={() => setSeqTotalSteps(3)}
+                  className={`px-2.5 py-1.5 font-medium transition-colors ${seqTotalSteps === 3 ? 'bg-brand-600 text-white' : 'text-gray-600 hover:bg-gray-100'}`}
+                  title="Secuencia de 3 toques (días 0, 5, 10)"
+                >3 toques</button>
+                <button
+                  onClick={() => setSeqTotalSteps(5)}
+                  className={`px-2.5 py-1.5 font-medium transition-colors ${seqTotalSteps === 5 ? 'bg-brand-600 text-white' : 'text-gray-600 hover:bg-gray-100'}`}
+                  title="Secuencia de 5 toques (días 0, 4, 8, 13, 18)"
+                >5 toques</button>
+              </div>
               <button
                 onClick={handleGenerateCampaignPreview}
                 disabled={generatingTemplate}
@@ -2105,7 +2567,9 @@ ${noActivity.map(r => personRow(r, '#fff')).join('')}
 
             <div className="space-y-2">
               {seqPreviewSteps.map((step, idx) => {
-                const stepLabels = ['Toque 1 — Presentación · Día 0', 'Toque 2 — Follow-up · Día 5', 'Toque 3 — Último intento · Día 10']
+                const stepLabels = seqTotalSteps === 5
+                  ? ['Toque 1 — Presentación · Día 0', 'Toque 2 — Follow-up · Día 4', 'Toque 3 — Profundización · Día 8', 'Toque 4 — Valor añadido · Día 13', 'Toque 5 — Último intento · Día 18']
+                  : ['Toque 1 — Presentación · Día 0', 'Toque 2 — Follow-up · Día 5', 'Toque 3 — Último intento · Día 10']
                 const isExpanded = expandedSeqStep === step.step_number
                 return (
                   <div key={step.step_number} className={`border rounded-xl overflow-hidden transition-all ${isExpanded ? 'border-brand-300' : 'border-gray-200'}`}>
@@ -2145,15 +2609,35 @@ ${noActivity.map(r => personRow(r, '#fff')).join('')}
                           />
                         </div>
                         <div>
-                          <label className="label text-xs">Cuerpo del email</label>
-                          <textarea
-                            className="input resize-y text-sm font-mono text-xs leading-relaxed"
-                            rows={8}
-                            value={step.body}
-                            onChange={e => setSeqPreviewSteps(prev => prev.map(s =>
-                              s.step_number === step.step_number ? { ...s, body: e.target.value } : s
-                            ))}
-                          />
+                          <div className="flex items-center justify-between mb-1">
+                            <label className="label text-xs">Cuerpo del email</label>
+                            <div className="flex items-center gap-1 border border-gray-200 rounded-lg overflow-hidden text-xs">
+                              <button
+                                onClick={() => setSeqPreviewBodyMode(prev => ({ ...prev, [step.step_number]: 'edit' }))}
+                                className={`px-2.5 py-1 font-medium transition-colors ${(seqPreviewBodyMode[step.step_number] ?? 'preview') === 'edit' ? 'bg-brand-600 text-white' : 'text-gray-500 hover:bg-gray-100'}`}
+                              >✏️ Editar</button>
+                              <button
+                                onClick={() => setSeqPreviewBodyMode(prev => ({ ...prev, [step.step_number]: 'preview' }))}
+                                className={`px-2.5 py-1 font-medium transition-colors ${(seqPreviewBodyMode[step.step_number] ?? 'preview') === 'preview' ? 'bg-brand-600 text-white' : 'text-gray-500 hover:bg-gray-100'}`}
+                              >👁 Preview</button>
+                            </div>
+                          </div>
+                          {(seqPreviewBodyMode[step.step_number] ?? 'preview') === 'edit' ? (
+                            <textarea
+                              className="input resize-y text-xs leading-relaxed font-mono w-full"
+                              rows={10}
+                              value={step.body}
+                              onChange={e => setSeqPreviewSteps(prev => prev.map(s =>
+                                s.step_number === step.step_number ? { ...s, body: e.target.value } : s
+                              ))}
+                            />
+                          ) : (
+                            <div
+                              className="border border-gray-200 rounded-xl p-4 bg-white text-sm text-gray-800 leading-relaxed min-h-[160px] overflow-auto"
+                              style={{ fontFamily: 'sans-serif' }}
+                              dangerouslySetInnerHTML={{ __html: step.body || '<p style="color:#9ca3af;font-size:12px;font-style:italic">Sin contenido</p>' }}
+                            />
+                          )}
                         </div>
                         <div>
                           <label className="label text-xs flex items-center gap-1">

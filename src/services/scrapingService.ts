@@ -129,6 +129,103 @@ export async function findEmailWithHunter(
   }
 }
 
+// ─── Artwork Signal Search ──────────────────────────────────────────────────
+// Detecta señales de los 4 dolores de MyMediaConnect en internet:
+//   1. Complejidad de SKUs / versiones de packaging
+//   2. Flujos manuales de aprobación de artes finales
+//   3. Riesgo regulatorio / compliance de etiquetado
+//   4. Expansión global / multi-mercado
+
+export interface ArtworkSignalResult {
+  title: string
+  snippet: string
+  url: string
+  date?: string
+}
+
+export interface ArtworkSignal {
+  query: string
+  dimension: 'complejidad' | 'proceso' | 'regulatorio' | 'global'
+  results: ArtworkSignalResult[]
+}
+
+/**
+ * searchArtworkSignals — Busca en internet señales de los problemas de artwork
+ * que resuelve MyMediaConnect. Hace 3 búsquedas SerpAPI en paralelo.
+ * Devuelve vacío (sin throw) si la API key no está o falla.
+ */
+export async function searchArtworkSignals(
+  companyName: string,
+  domain?: string,
+  country = 'es'
+): Promise<ArtworkSignal[]> {
+  const apiKey = process.env.SERPAPI_API_KEY
+  if (!apiKey) return []
+
+  const gl = country?.slice(0, 2).toLowerCase() || 'es'
+
+  const queries: Array<{ q: string; dimension: ArtworkSignal['dimension'] }> = [
+    {
+      // Señales de complejidad: lanzamientos, nuevos SKUs, variantes, gamas
+      q: `"${companyName}" nuevo producto lanzamiento packaging gama SKU referencia`,
+      dimension: 'complejidad',
+    },
+    {
+      // Señales regulatorias: compliance, retiradas, etiquetado, normativa
+      q: `"${companyName}" etiquetado normativa regulatorio retirada recall compliance`,
+      dimension: 'regulatorio',
+    },
+    {
+      // Señales de expansión: mercados internacionales, exportación
+      q: `"${companyName}" exportación mercado internacional expansión distribución`,
+      dimension: 'global',
+    },
+  ]
+
+  const settled = await Promise.allSettled(
+    queries.map(async ({ q, dimension }) => {
+      const params = new URLSearchParams({
+        api_key: apiKey,
+        engine: 'google',
+        q,
+        gl,
+        hl: 'es',
+        num: '5',
+      })
+
+      const res = await fetch(`https://serpapi.com/search?${params}`, {
+        signal: AbortSignal.timeout(9000),
+      })
+      if (!res.ok) throw new Error(`SerpAPI ${res.status}`)
+
+      const data = await res.json()
+      const organic = (data.organic_results ?? []) as Array<{
+        title?: string
+        snippet?: string
+        link?: string
+        date?: string
+      }>
+
+      const signal: ArtworkSignal = {
+        query: q,
+        dimension,
+        results: organic.slice(0, 4).map(r => ({
+          title: r.title ?? '',
+          snippet: r.snippet ?? '',
+          url: r.link ?? '',
+          ...(r.date ? { date: r.date } : {}),
+        })),
+      }
+      return signal
+    })
+  )
+
+  return settled
+    .filter((r): r is PromiseFulfilledResult<ArtworkSignal> => r.status === 'fulfilled')
+    .map(r => r.value)
+    .filter(r => r.results.length > 0)
+}
+
 // --- FACTORY: elegir proveedor según configuración ---
 export async function searchLeads(
   query: string,

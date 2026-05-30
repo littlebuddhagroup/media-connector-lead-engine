@@ -7,7 +7,7 @@ import Image from 'next/image'
 import {
   LayoutDashboard, Megaphone, Users, Upload, Settings,
   ChevronLeft, ChevronRight, LogOut, Telescope, Kanban, AtSign, Wrench, UsersRound, BarChart2, Mail,
-  Menu, X, MoreHorizontal, Brain,
+  Menu, X, MoreHorizontal, Brain, GitFork,
 } from 'lucide-react'
 import { MadeBy } from '@/components/ui/MadeBy'
 import { createClient } from '@/lib/supabase/client'
@@ -31,6 +31,7 @@ const navSections = [
     items: [
       { href: '/discover',   label: 'Buscar email',       icon: Telescope },
       { href: '/hunter',     label: 'Lead Scout',         icon: AtSign    },
+      { href: '/lookalike',  label: 'Lookalike',          icon: GitFork   },
       { href: '/imports',    label: 'Importar contactos', icon: Upload    },
     ],
   },
