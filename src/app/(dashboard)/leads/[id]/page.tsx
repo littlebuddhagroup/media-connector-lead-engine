@@ -2582,15 +2582,51 @@ export default function LeadDetailPage({ params }: { params: { id: string } }) {
                         />
                       </div>
                       <div>
-                        <label className="label text-xs">Cuerpo del email</label>
-                        <textarea
-                          className="input resize-y text-sm font-mono text-xs leading-relaxed"
-                          rows={8}
-                          value={step.body}
-                          onChange={e => setPreviewSteps(prev => prev.map(s =>
-                            s.step_number === step.step_number ? { ...s, body: e.target.value } : s
-                          ))}
-                        />
+                        <div className="flex items-center justify-between mb-1">
+                          <label className="label text-xs">Cuerpo del email</label>
+                          <div className="flex items-center gap-1 border border-gray-200 rounded-lg overflow-hidden text-xs">
+                            <button
+                              type="button"
+                              onClick={() => setPreviewSteps(prev => prev.map(s =>
+                                s.step_number === step.step_number ? { ...s, _mode: 'edit' } : s
+                              ))}
+                              className={`px-2.5 py-1 font-medium transition-colors ${(step as Record<string,unknown>)._mode !== 'preview' ? 'bg-brand-600 text-white' : 'text-gray-500 hover:bg-gray-100'}`}
+                            >✏️ Editar</button>
+                            <button
+                              type="button"
+                              onClick={() => setPreviewSteps(prev => prev.map(s =>
+                                s.step_number === step.step_number ? { ...s, _mode: 'preview' } : s
+                              ))}
+                              className={`px-2.5 py-1 font-medium transition-colors ${(step as Record<string,unknown>)._mode === 'preview' ? 'bg-brand-600 text-white' : 'text-gray-500 hover:bg-gray-100'}`}
+                            >👁 Preview</button>
+                          </div>
+                        </div>
+                        {(step as Record<string,unknown>)._mode === 'preview' ? (
+                          <div
+                            className="border border-gray-200 rounded-xl p-4 bg-white text-sm text-gray-800 leading-relaxed min-h-[160px] overflow-auto"
+                            style={{ fontFamily: 'sans-serif' }}
+                            dangerouslySetInnerHTML={{ __html: step.body || '<p style="color:#9ca3af;font-size:12px;font-style:italic">Sin contenido</p>' }}
+                          />
+                        ) : (
+                          <Suspense fallback={
+                            <textarea
+                              className="input resize-y text-sm w-full"
+                              rows={8}
+                              value={step.body}
+                              onChange={e => setPreviewSteps(prev => prev.map(s =>
+                                s.step_number === step.step_number ? { ...s, body: e.target.value } : s
+                              ))}
+                            />
+                          }>
+                            <RichTextEditor
+                              value={step.body}
+                              onChange={v => setPreviewSteps(prev => prev.map(s =>
+                                s.step_number === step.step_number ? { ...s, body: v } : s
+                              ))}
+                              placeholder="Escribe el cuerpo del email... (puedes añadir enlaces, imágenes y emojis)"
+                            />
+                          </Suspense>
+                        )}
                       </div>
                       <div>
                         <label className="label text-xs flex items-center gap-1">

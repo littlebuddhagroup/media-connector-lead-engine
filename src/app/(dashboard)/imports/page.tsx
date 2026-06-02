@@ -10,6 +10,8 @@ import type { Campaign } from '@/types'
 
 const LEAD_FIELDS = [
   { key: 'company_name', label: 'Nombre empresa', required: true },
+  { key: 'first_name', label: 'Nombre (contacto)' },
+  { key: 'last_name', label: 'Apellidos (contacto)' },
   { key: 'website', label: 'Web' },
   { key: 'email', label: 'Email' },
   { key: 'phone', label: 'Teléfono' },
@@ -60,7 +62,9 @@ function ImportsPageContent() {
         return (
           hl.includes(field.key.toLowerCase()) ||
           hl.includes(field.label.toLowerCase()) ||
-          (field.key === 'company_name' && (hl.includes('empresa') || hl.includes('company') || hl.includes('nombre'))) ||
+          (field.key === 'company_name' && (hl.includes('empresa') || hl.includes('company') || hl === 'nombre')) ||
+          (field.key === 'first_name' && (hl === 'nombre' || hl === 'first_name' || hl === 'firstname' || hl === 'nombre contacto' || hl === 'nombre_contacto' || hl === 'first name' || hl === 'prénom')) ||
+          (field.key === 'last_name' && (hl === 'apellidos' || hl === 'apellido' || hl === 'last_name' || hl === 'lastname' || hl === 'last name' || hl === 'nom')) ||
           (field.key === 'email' && hl.includes('mail')) ||
           (field.key === 'website' && (hl.includes('web') || hl.includes('url') || hl.includes('site') || hl.includes('dominio'))) ||
           (field.key === 'phone' && (hl.includes('tel') || hl.includes('phone') || hl.includes('móvil'))) ||
