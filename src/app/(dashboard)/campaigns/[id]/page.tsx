@@ -2623,13 +2623,12 @@ ${noActivity.map(r => personRow(r, '#fff')).join('')}
                             </div>
                           </div>
                           {(seqPreviewBodyMode[step.step_number] ?? 'preview') === 'edit' ? (
-                            <textarea
-                              className="input resize-y text-xs leading-relaxed font-mono w-full"
-                              rows={10}
+                            <RichTextEditor
                               value={step.body}
-                              onChange={e => setSeqPreviewSteps(prev => prev.map(s =>
-                                s.step_number === step.step_number ? { ...s, body: e.target.value } : s
+                              onChange={v => setSeqPreviewSteps(prev => prev.map(s =>
+                                s.step_number === step.step_number ? { ...s, body: v } : s
                               ))}
+                              placeholder="Escribe el cuerpo del email... (puedes añadir enlaces, imágenes y emojis)"
                             />
                           ) : (
                             <div
