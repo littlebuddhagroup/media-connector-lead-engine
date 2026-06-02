@@ -24,7 +24,7 @@ const SENDER_ACCOUNTS: Record<string, string> = {
 const REPLIED_STATUSES = ['replied', 'interested', 'meeting_scheduled']
 
 type LeadRow = { id: string; status: string; email: string | null; company_name: string }
-type SettingsRow = { user_id: string; email_from_address: string | null; email_from_name: string | null; email_signature: string | null; sender_email: string | null }
+type SettingsRow = { user_id: string; email_from_address: string | null; email_from_name: string | null; email_signature: string | null; sender_email: string | null; pipedrive_bcc_enabled: boolean | null }
 
 type SendResult =
   | { type: 'skip_inactive'; stepId: string }
@@ -76,7 +76,7 @@ export async function GET(request: Request) {
   const [{ data: leadsData }, { data: settingsData }] = await Promise.all([
     supabase.from('leads').select('id, status, email, company_name').in('id', leadIds),
     supabase.from('settings')
-      .select('user_id, email_from_address, email_from_name, email_signature, sender_email')
+      .select('user_id, email_from_address, email_from_name, email_signature, sender_email, pipedrive_bcc_enabled')
       .in('user_id', userIds),
   ])
 
@@ -124,6 +124,8 @@ export async function GET(request: Request) {
           from: `${name} <${from}>`,
           to: toEmail,
           replyTo,
+          // BCC a Pipedrive — activo por defecto, desactivable desde Configuración
+          ...(settings?.pipedrive_bcc_enabled !== false && { bcc: 'mymediaconnect@pipedrivemail.com' }),
           subject: step.subject as string,
           text: body,
           html: body.replace(/\n/g, '<br>'),

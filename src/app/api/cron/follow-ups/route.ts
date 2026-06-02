@@ -17,7 +17,7 @@ import { runConcurrently } from '@/lib/concurrency'
 const REPLIED_STATUSES = ['replied', 'interested', 'meeting_scheduled']
 
 type LeadRow = { id: string; status: string; email: string | null; company_name: string }
-type SettingsRow = { user_id: string; email_from_address: string | null; email_from_name: string | null; email_signature: string | null }
+type SettingsRow = { user_id: string; email_from_address: string | null; email_from_name: string | null; email_signature: string | null; pipedrive_bcc_enabled: boolean | null }
 type FollowUpRow = { id: string; lead_id: string; user_id: string; campaign_id: string | null; subject: string; body: string; campaign?: { status: string } | null }
 
 type FollowUpResult =
@@ -73,7 +73,7 @@ export async function GET(request: Request) {
   const [{ data: leadsData }, { data: settingsData }] = await Promise.all([
     supabase.from('leads').select('id, status, email, company_name').in('id', leadIds),
     supabase.from('settings')
-      .select('user_id, email_from_address, email_from_name, email_signature')
+      .select('user_id, email_from_address, email_from_name, email_signature, pipedrive_bcc_enabled')
       .in('user_id', userIds),
   ])
 
@@ -108,6 +108,8 @@ export async function GET(request: Request) {
         const result = await resend.emails.send({
           from: `${name} <${from}>`,
           to: toEmail,
+          // BCC a Pipedrive — activo por defecto, desactivable desde Configuración
+          ...(settings?.pipedrive_bcc_enabled !== false && { bcc: 'mymediaconnect@pipedrivemail.com' }),
           subject: followUp.subject,
           text: body,
           html: body.replace(/\n/g, '<br>'),

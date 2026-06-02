@@ -126,7 +126,7 @@ export async function POST(request: Request) {
       // Settings del usuario
       const { data: settings } = await admin
         .from('settings')
-        .select('email_from_address, email_from_name, email_signature, sender_email')
+        .select('email_from_address, email_from_name, email_signature, sender_email, pipedrive_bcc_enabled')
         .eq('user_id', sequence.user_id)
         .single()
 
@@ -163,6 +163,8 @@ export async function POST(request: Request) {
         from: `${name} <${from}>`,
         to: toEmail,
         replyTo,
+        // BCC a Pipedrive — activo por defecto, desactivable desde Configuración
+        ...(settings?.pipedrive_bcc_enabled !== false && { bcc: 'mymediaconnect@pipedrivemail.com' }),
         subject: step.subject,
         html: htmlBody,
         text: textBody,
