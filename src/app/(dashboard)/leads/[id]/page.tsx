@@ -354,6 +354,7 @@ export default function LeadDetailPage({ params }: { params: { id: string } }) {
   const [generatingPreview, setGeneratingPreview] = useState(false)
   const [previewSteps, setPreviewSteps] = useState<PreviewStep[]>([])
   const [expandedPreviewStep, setExpandedPreviewStep] = useState<number>(1)
+  const [previewBodyMode, setPreviewBodyMode] = useState<Record<number, 'edit' | 'preview'>>({}) // vacío = edit por defecto
 
   // Sequence step editor
   const [expandedStep, setExpandedStep] = useState<string | null>(null)
@@ -2587,21 +2588,17 @@ export default function LeadDetailPage({ params }: { params: { id: string } }) {
                           <div className="flex items-center gap-1 border border-gray-200 rounded-lg overflow-hidden text-xs">
                             <button
                               type="button"
-                              onClick={() => setPreviewSteps(prev => prev.map(s =>
-                                s.step_number === step.step_number ? { ...s, _mode: 'edit' } : s
-                              ))}
-                              className={`px-2.5 py-1 font-medium transition-colors ${(step as Record<string,unknown>)._mode !== 'preview' ? 'bg-brand-600 text-white' : 'text-gray-500 hover:bg-gray-100'}`}
+                              onClick={() => setPreviewBodyMode(prev => ({ ...prev, [step.step_number]: 'edit' }))}
+                              className={`px-2.5 py-1 font-medium transition-colors ${(previewBodyMode[step.step_number] ?? 'edit') === 'edit' ? 'bg-brand-600 text-white' : 'text-gray-500 hover:bg-gray-100'}`}
                             >✏️ Editar</button>
                             <button
                               type="button"
-                              onClick={() => setPreviewSteps(prev => prev.map(s =>
-                                s.step_number === step.step_number ? { ...s, _mode: 'preview' } : s
-                              ))}
-                              className={`px-2.5 py-1 font-medium transition-colors ${(step as Record<string,unknown>)._mode === 'preview' ? 'bg-brand-600 text-white' : 'text-gray-500 hover:bg-gray-100'}`}
+                              onClick={() => setPreviewBodyMode(prev => ({ ...prev, [step.step_number]: 'preview' }))}
+                              className={`px-2.5 py-1 font-medium transition-colors ${(previewBodyMode[step.step_number] ?? 'edit') === 'preview' ? 'bg-brand-600 text-white' : 'text-gray-500 hover:bg-gray-100'}`}
                             >👁 Preview</button>
                           </div>
                         </div>
-                        {(step as Record<string,unknown>)._mode === 'preview' ? (
+                        {(previewBodyMode[step.step_number] ?? 'edit') === 'preview' ? (
                           <div
                             className="border border-gray-200 rounded-xl p-4 bg-white text-sm text-gray-800 leading-relaxed min-h-[160px] overflow-auto"
                             style={{ fontFamily: 'sans-serif' }}
