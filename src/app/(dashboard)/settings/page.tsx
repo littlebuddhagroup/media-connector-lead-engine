@@ -32,6 +32,8 @@ export default function SettingsPage() {
     notification_emails: '' as string,
     briefing_enabled: true,
     signal_alerts_enabled: true,
+    // Pipedrive BCC sync
+    pipedrive_bcc_enabled: true,
   })
   const [serviceStatus, setServiceStatus] = useState<Record<string, boolean>>({})
   const [resendFrom, setResendFrom] = useState('')
@@ -655,6 +657,24 @@ export default function SettingsPage() {
                   <Unlink className="w-3.5 h-3.5" /> Desconectar
                 </button>
               </div>
+
+              {/* BCC sync automático */}
+              <label className="flex items-center gap-3 cursor-pointer p-3 rounded-xl border border-gray-100 bg-gray-50">
+                <input
+                  type="checkbox"
+                  className="w-4 h-4 accent-brand-600 shrink-0"
+                  checked={settings.pipedrive_bcc_enabled}
+                  onChange={e => setSettings(s => ({ ...s, pipedrive_bcc_enabled: e.target.checked }))}
+                />
+                <div>
+                  <p className="text-sm font-medium text-gray-800">Sync automático de emails enviados</p>
+                  <p className="text-xs text-gray-500">
+                    Cada email saliente (individual, secuencias y campañas) se enviará en copia oculta a{' '}
+                    <span className="font-mono text-gray-700">mymediaconnect@pipedrivemail.com</span>{' '}
+                    para que Pipedrive lo capture automáticamente.
+                  </p>
+                </div>
+              </label>
 
               {/* Acciones de sync */}
               <div className="grid grid-cols-2 gap-3">

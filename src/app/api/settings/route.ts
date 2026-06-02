@@ -45,6 +45,7 @@ export async function PATCH(request: Request) {
   if (body.briefing_enabled       !== undefined) v2Fields.briefing_enabled       = body.briefing_enabled
   if (body.signal_alerts_enabled  !== undefined) v2Fields.signal_alerts_enabled  = body.signal_alerts_enabled
   if (body.intelligence_modules   !== undefined) v2Fields.intelligence_modules   = body.intelligence_modules
+  if (body.pipedrive_bcc_enabled  !== undefined) v2Fields.pipedrive_bcc_enabled  = body.pipedrive_bcc_enabled
 
   // Intentar guardado completo primero
   const { data, error } = await supabase

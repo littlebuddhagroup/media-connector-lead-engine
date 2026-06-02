@@ -38,7 +38,7 @@ export async function POST(_req: Request, { params }: Params) {
 
   // 2. Obtener cuentas de envío configuradas (rotación)
   const { data: settings } = await admin.from('settings')
-    .select('email_from_address, email_from_name, email_signature')
+    .select('email_from_address, email_from_name, email_signature, pipedrive_bcc_enabled')
     .eq('user_id', user.id)
     .single()
 
@@ -213,7 +213,8 @@ export async function POST(_req: Request, { params }: Params) {
         const { data: emailData, error: emailErr } = await resend.emails.send({
           from: `${senderName} <${senderEmail}>`,
           to: recipient.email,
-          bcc: 'mymediaconnect@pipedrivemail.com',
+          // BCC a Pipedrive — activo por defecto, desactivable desde Configuración
+          ...(settings?.pipedrive_bcc_enabled !== false && { bcc: 'mymediaconnect@pipedrivemail.com' }),
           subject: newsletter.subject,
           html: fullHtml,
           replyTo: newsletter.reply_to || senderEmail,
