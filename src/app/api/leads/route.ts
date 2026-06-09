@@ -29,36 +29,13 @@ export async function GET(request: Request) {
   const teamUserIds = await getTeamUserIds(user.id)
   const admin = createAdminClient()
 
-  // ── Filtro por campaña ───────────────────────────────────────────────────
-  // Combina las dos fuentes de verdad: campaign_id directo + junction table
-  let campaignLeadIds: string[] | null = null
-  if (campaign_id) {
-    const directRes = await admin
-      .from('leads').select('id').eq('campaign_id', campaign_id).in('user_id', teamUserIds)
-    const directIds = (directRes.data ?? []).map((r: { id: string }) => r.id)
-
-    let junctionIds: string[] = []
-    try {
-      const junctionRes = await admin
-        .from('campaign_leads').select('lead_id').eq('campaign_id', campaign_id)
-      if (!junctionRes.error) {
-        junctionIds = (junctionRes.data ?? []).map((r: { lead_id: string }) => r.lead_id)
-      }
-    } catch { /* tabla aún no existe */ }
-
-    campaignLeadIds = [...new Set([...directIds, ...junctionIds])]
-    if (campaignLeadIds.length === 0) {
-      return NextResponse.json({ data: [], total: 0, page, per_page, total_pages: 0 })
-    }
-  }
-
-  // ── Select: añadir INNER JOIN con lead_list_members si se filtra por lista ──
-  // Esto evita el problema de URL overflow que ocurre cuando se intenta hacer
-  // .in('id', [2000+ UUIDs]) — la URL excede los ~8 KB que acepta PostgREST.
-  // Con !inner, PostgREST hace un JOIN directo y la paginación funciona igual.
-  const selectStr = list_id
-    ? '*, campaign:campaigns(id,name), _llm:lead_list_members!inner(list_id)'
-    : '*, campaign:campaigns(id,name)'
+  // ── Select con INNER JOINs según filtros activos ────────────────────────
+  // Usamos !inner para evitar URL overflow que ocurre con .in('id', [N+ UUIDs]).
+  // PostgREST hace el JOIN en el servidor y la paginación funciona correctamente.
+  const joins: string[] = []
+  if (list_id)     joins.push('_llm:lead_list_members!inner(list_id)')
+  if (campaign_id) joins.push('_cl:campaign_leads!inner(campaign_id)')
+  const selectStr = ['*', 'campaign:campaigns(id,name)', ...joins].join(', ')
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let query: any = admin
@@ -66,9 +43,8 @@ export async function GET(request: Request) {
     .select(selectStr, { count: 'exact' })
     .in('user_id', teamUserIds)
 
-  // Filtro de lista: aplicar sobre el join (no sobre un array de IDs)
-  if (list_id)           query = query.eq('_llm.list_id', list_id)
-  if (campaignLeadIds != null) query = query.in('id', campaignLeadIds)
+  if (list_id)     query = query.eq('_llm.list_id', list_id)
+  if (campaign_id) query = query.eq('_cl.campaign_id', campaign_id)
   if (status)            query = query.eq('status', status)
   if (priority)          query = query.eq('priority', priority)
   if (sector)            query = query.ilike('sector', `%${sector}%`)
@@ -92,9 +68,13 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: error.message }, { status: 500 })
   }
 
-  // Eliminar el campo auxiliar _llm (lead_list_members) antes de devolver
-  const returnData = list_id
-    ? (data ?? []).map((row: Record<string, unknown>) => { delete row._llm; return row })
+  // Eliminar campos auxiliares de los JOINs antes de devolver
+  const returnData = (list_id || campaign_id)
+    ? (data ?? []).map((row: Record<string, unknown>) => {
+        delete row._llm
+        delete row._cl
+        return row
+      })
     : (data ?? [])
 
   return NextResponse.json({
