@@ -18,13 +18,16 @@ export async function GET(req: Request, { params }: Params) {
   const teamIds = await getTeamUserIds(user.id)
   const admin = createAdminClient()
 
-  // Obtener lead_ids ya asignados a esta campaña
-  const { data: existing } = await admin
-    .from('campaign_leads')
-    .select('lead_id')
-    .eq('campaign_id', id)
-
-  const existingIds = (existing ?? []).map((r: { lead_id: string }) => r.lead_id)
+  // Obtener lead_ids ya asignados a esta campaña (ambas fuentes: junction + campo directo)
+  const [junctionRes, directRes] = await Promise.all([
+    admin.from('campaign_leads').select('lead_id').eq('campaign_id', id),
+    admin.from('leads').select('id').eq('campaign_id', id).in('user_id', teamIds),
+  ])
+  const existingIds = [
+    ...(junctionRes.data ?? []).map((r: { lead_id: string }) => r.lead_id),
+    ...(directRes.data ?? []).map((r: { id: string }) => r.id),
+  ]
+  const uniqueExistingIds = [...new Set(existingIds)]
 
   let query = admin
     .from('leads')
@@ -33,9 +36,10 @@ export async function GET(req: Request, { params }: Params) {
     .order('score', { ascending: false })
     .limit(200)
 
-  // Excluir los que ya están asignados
-  if (existingIds.length > 0) {
-    query = query.not('id', 'in', `(${existingIds.join(',')})`)
+  // Excluir los que ya están en la campaña (por cualquier vía)
+  if (uniqueExistingIds.length > 0) {
+    query = query.not('id', 'in', `(${uniqueExistingIds.join(',')})`
+    )
   }
 
   if (search) {

@@ -28,7 +28,7 @@ import {
   Plus, Search, Trash2, Send, ChevronRight, ChevronLeft, BarChart3, FileText,
   Settings, Loader2, CheckCircle, XCircle, Play, Pause,
   Star, Clock, Check, Save, Edit2, Mails, Copy, Sparkles, AlertTriangle,
-  CalendarClock, ChevronDown, ChevronUp, ArrowDownToLine
+  CalendarClock, ChevronDown, ChevronUp, ArrowDownToLine, CheckSquare, Square, X
 } from 'lucide-react'
 import { toast } from '@/components/ui/Toast'
 import { statusLabel, statusColor, priorityColor, scoreToBg, formatDate, formatDateRelative, htmlToText, textToHtml } from '@/lib/utils'
@@ -182,6 +182,9 @@ export default function CampaignDetailPage() {
   // Quitar leads
   const [selectedToRemove, setSelectedToRemove] = useState<Set<string>>(new Set())
   const [removing, setRemoving] = useState(false)
+  const [selectAllCampLeads, setSelectAllCampLeads] = useState(false)
+  const [loadingSelectAllCamp, setLoadingSelectAllCamp] = useState(false)
+  const [showCampSelectMenu, setShowCampSelectMenu] = useState(false)
 
   // Plantilla
   const [editingTemplate, setEditingTemplate] = useState<Template | null>(null)
@@ -593,6 +596,15 @@ export default function CampaignDetailPage() {
     }
   }
 
+  const handleSelectAllCampLeads = async () => {
+    setLoadingSelectAllCamp(true)
+    const res = await fetch(`/api/leads/ids?campaign_id=${id}`)
+    const json = await res.json()
+    setSelectedToRemove(new Set(json.ids ?? []))
+    setSelectAllCampLeads(true)
+    setLoadingSelectAllCamp(false)
+  }
+
   const handleRemoveLeads = async () => {
     if (selectedToRemove.size === 0) return
     setRemoving(true)
@@ -604,6 +616,7 @@ export default function CampaignDetailPage() {
     setRemoving(false)
     if (res.ok) {
       setSelectedToRemove(new Set())
+      setSelectAllCampLeads(false)
       fetchAll()
       toast.success('Leads quitados', 'Los leads han sido desvinculados de la campaña.')
     } else {
@@ -909,7 +922,7 @@ export default function CampaignDetailPage() {
 
   const tabs = [
     { id: 'overview', label: 'Resumen', icon: BarChart3 },
-    { id: 'leads', label: `Leads (${campLeadsTotal || leads.length})`, icon: Users },
+    { id: 'leads', label: `Leads (${stats?.leads?.total ?? campLeadsTotal ?? leads.length})`, icon: Users },
     { id: 'sequences', label: `Secuencias (${sequences.length})`, icon: Mails },
     { id: 'analytics', label: 'Analíticas', icon: TrendingUp },
     { id: 'settings', label: 'Ajustes', icon: Settings },
@@ -1295,12 +1308,21 @@ ${noActivity.map(r => personRow(r, '#fff')).join('')}
             {activeTab === 'leads' && (
               <div className="space-y-4">
                 <div className="flex items-center justify-between gap-3">
-                  <p className="text-sm text-gray-600">
-                    {campLeadsTotal} leads en esta campaña
-                    {selectedToRemove.size > 0 && (
-                      <span className="ml-2 text-red-600">· {selectedToRemove.size} seleccionados</span>
+                  <div>
+                    <p className="text-sm text-gray-600">
+                      {stats?.leads?.total ?? campLeadsTotal} leads en esta campaña
+                      {selectedToRemove.size > 0 && (
+                        <span className="ml-2 text-red-600">· {selectedToRemove.size} seleccionados</span>
+                      )}
+                    </p>
+                    {selectAllCampLeads && (
+                      <p className="text-xs text-green-700 flex items-center gap-1 mt-0.5">
+                        <CheckSquare className="w-3 h-3" />
+                        Todos los {selectedToRemove.size} leads seleccionados.
+                        <button onClick={() => { setSelectedToRemove(new Set(leads.map(l => l.id))); setSelectAllCampLeads(false) }} className="underline ml-1">Cancelar selección global</button>
+                      </p>
                     )}
-                  </p>
+                  </div>
                   <div className="flex gap-2">
                     {selectedToRemove.size > 0 && (
                       <button
@@ -1334,13 +1356,74 @@ ${noActivity.map(r => personRow(r, '#fff')).join('')}
                     <table className="w-full text-sm">
                       <thead>
                         <tr className="border-b border-gray-100">
-                          <th className="px-3 py-2.5 text-left">
-                            <input
-                              type="checkbox"
-                              className="rounded"
-                              checked={selectedToRemove.size === leads.length && leads.length > 0}
-                              onChange={e => setSelectedToRemove(e.target.checked ? new Set(leads.map(l => l.id)) : new Set())}
-                            />
+                          <th className="px-3 py-2.5 text-left w-10 relative">
+                            <div className="flex items-center gap-0.5">
+                              <button
+                                onClick={() => {
+                                  const allPageSelected = leads.length > 0 && leads.every(l => selectedToRemove.has(l.id))
+                                  if (allPageSelected) { setSelectedToRemove(new Set()); setSelectAllCampLeads(false) }
+                                  else { setSelectedToRemove(new Set(leads.map(l => l.id))); setSelectAllCampLeads(false) }
+                                }}
+                                className="transition-colors"
+                                style={{ color: leads.length > 0 && leads.every(l => selectedToRemove.has(l.id)) ? '#D80003' : '#9ca3af' }}
+                              >
+                                {leads.length > 0 && leads.every(l => selectedToRemove.has(l.id))
+                                  ? <CheckSquare className="w-4 h-4" style={{ color: '#D80003' }} />
+                                  : selectedToRemove.size > 0
+                                  ? <div style={{ width: '16px', height: '16px', border: '2px solid #9ca3af', borderRadius: '3px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                      <div style={{ width: '8px', height: '2px', background: '#9ca3af', borderRadius: '1px' }} />
+                                    </div>
+                                  : <Square className="w-4 h-4" />
+                                }
+                              </button>
+                              {campLeadsTotal > CAMP_LEADS_PER_PAGE && (
+                                <button
+                                  onClick={() => setShowCampSelectMenu(m => !m)}
+                                  className="text-gray-300 hover:text-gray-500 transition-colors"
+                                  style={{ padding: '1px' }}
+                                  title="Opciones de selección"
+                                >
+                                  <ChevronDown className="w-3 h-3" />
+                                </button>
+                              )}
+                            </div>
+                            {showCampSelectMenu && (
+                              <>
+                                <div className="fixed inset-0 z-40" onClick={() => setShowCampSelectMenu(false)} />
+                                <div className="absolute top-full left-0 z-50 bg-white border border-gray-200 rounded-xl shadow-xl py-1 min-w-[220px] mt-1" style={{ boxShadow: '0 8px 32px rgba(0,0,0,0.12)' }}>
+                                  <button
+                                    onClick={() => { setSelectedToRemove(new Set(leads.map(l => l.id))); setSelectAllCampLeads(false); setShowCampSelectMenu(false) }}
+                                    className="w-full text-left px-3 py-2 text-xs hover:bg-gray-50 flex items-center gap-2 transition-colors"
+                                  >
+                                    <Square className="w-3.5 h-3.5 text-gray-400 shrink-0" />
+                                    <span>Esta página <span className="text-gray-400 ml-1">({leads.length})</span></span>
+                                  </button>
+                                  <button
+                                    onClick={() => { handleSelectAllCampLeads(); setShowCampSelectMenu(false) }}
+                                    disabled={loadingSelectAllCamp}
+                                    className="w-full text-left px-3 py-2 text-xs hover:bg-gray-50 flex items-center gap-2 transition-colors disabled:opacity-50"
+                                  >
+                                    {loadingSelectAllCamp
+                                      ? <Loader2 className="w-3.5 h-3.5 shrink-0 animate-spin" style={{ color: '#D80003' }} />
+                                      : <CheckSquare className="w-3.5 h-3.5 shrink-0" style={{ color: '#D80003' }} />
+                                    }
+                                    <span className="font-semibold">Seleccionar todo <span className="font-normal text-gray-400 ml-1">({stats?.leads?.total ?? campLeadsTotal})</span></span>
+                                  </button>
+                                  {selectedToRemove.size > 0 && (
+                                    <>
+                                      <div className="border-t border-gray-100 my-1" />
+                                      <button
+                                        onClick={() => { setSelectedToRemove(new Set()); setSelectAllCampLeads(false); setShowCampSelectMenu(false) }}
+                                        className="w-full text-left px-3 py-2 text-xs hover:bg-gray-50 flex items-center gap-2 text-gray-400 hover:text-gray-600 transition-colors"
+                                      >
+                                        <X className="w-3.5 h-3.5 shrink-0" />
+                                        Deseleccionar todo
+                                      </button>
+                                    </>
+                                  )}
+                                </div>
+                              </>
+                            )}
                           </th>
                           {['Empresa', 'Email', 'Estado', 'Prioridad', 'Score', 'Añadido'].map(h => (
                             <th key={h} className="px-3 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wide">
