@@ -226,6 +226,13 @@ export default function LeadsPage() {
 
     const res = await fetch(`/api/leads?${params}`)
     const json = await res.json()
+    if (!res.ok) {
+      console.error('[fetchLeads] API error:', json.error)
+      setLeads([])
+      setTotal(0)
+      setLoading(false)
+      return
+    }
     setLeads(json.data ?? [])
     setTotal(json.total ?? 0)
     setLoading(false)
@@ -1195,7 +1202,7 @@ export default function LeadsPage() {
                     // ── Agrupado por empresa ──────────────────────────────
                     const groups = new Map<string, Lead[]>()
                     for (const lead of leads) {
-                      const key = lead.company_name.trim().toLowerCase()
+                      const key = (lead.company_name ?? '').trim().toLowerCase() || '(sin empresa)'
                       if (!groups.has(key)) groups.set(key, [])
                       groups.get(key)!.push(lead)
                     }

@@ -29,31 +29,14 @@ export async function GET(request: Request) {
   const teamUserIds = await getTeamUserIds(user.id)
   const admin = createAdminClient()
 
-  // Si filtramos por lista, primero obtenemos los lead_ids de esa lista
-  let listLeadIds: string[] | null = null
-  if (list_id) {
-    const { data: members } = await admin
-      .from('lead_list_members')
-      .select('lead_id')
-      .eq('list_id', list_id)
-    listLeadIds = (members ?? []).map((m: { lead_id: string }) => m.lead_id)
-    // Si la lista está vacía, retornamos directamente sin hacer la query completa
-    if (listLeadIds!.length === 0) {
-      return NextResponse.json({ data: [], total: 0, page, per_page, total_pages: 0 })
-    }
-  }
-
-  // Si filtramos por campaña, combinamos las dos fuentes de verdad:
-  // 1. leads con campaign_id directo (datos existentes)
-  // 2. campaign_leads junction table (datos many-to-many nuevos)
+  // ── Filtro por campaña ───────────────────────────────────────────────────
+  // Combina las dos fuentes de verdad: campaign_id directo + junction table
   let campaignLeadIds: string[] | null = null
   if (campaign_id) {
-    // Fuente 1: leads con campaign_id directo (siempre disponible)
     const directRes = await admin
       .from('leads').select('id').eq('campaign_id', campaign_id).in('user_id', teamUserIds)
     const directIds = (directRes.data ?? []).map((r: { id: string }) => r.id)
 
-    // Fuente 2: campaign_leads junction (si existe la tabla)
     let junctionIds: string[] = []
     try {
       const junctionRes = await admin
@@ -69,20 +52,30 @@ export async function GET(request: Request) {
     }
   }
 
-  let query = admin
+  // ── Select: añadir INNER JOIN con lead_list_members si se filtra por lista ──
+  // Esto evita el problema de URL overflow que ocurre cuando se intenta hacer
+  // .in('id', [2000+ UUIDs]) — la URL excede los ~8 KB que acepta PostgREST.
+  // Con !inner, PostgREST hace un JOIN directo y la paginación funciona igual.
+  const selectStr = list_id
+    ? '*, campaign:campaigns(id,name), _llm:lead_list_members!inner(list_id)'
+    : '*, campaign:campaigns(id,name)'
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let query: any = admin
     .from('leads')
-    .select('*, campaign:campaigns(id,name)', { count: 'exact' })
+    .select(selectStr, { count: 'exact' })
     .in('user_id', teamUserIds)
 
+  // Filtro de lista: aplicar sobre el join (no sobre un array de IDs)
+  if (list_id)           query = query.eq('_llm.list_id', list_id)
   if (campaignLeadIds != null) query = query.in('id', campaignLeadIds)
-  if (status) query = query.eq('status', status)
-  if (priority) query = query.eq('priority', priority)
-  if (sector) query = query.ilike('sector', `%${sector}%`)
-  if (country) query = query.ilike('country', `%${country}%`)
-  if (score_min) query = query.gte('score', parseInt(score_min))
-  if (score_max) query = query.lte('score', parseInt(score_max))
-  if (tag) query = query.contains('tags', [tag])
-  if (listLeadIds != null) query = query.in('id', listLeadIds)
+  if (status)            query = query.eq('status', status)
+  if (priority)          query = query.eq('priority', priority)
+  if (sector)            query = query.ilike('sector', `%${sector}%`)
+  if (country)           query = query.ilike('country', `%${country}%`)
+  if (score_min)         query = query.gte('score', parseInt(score_min))
+  if (score_max)         query = query.lte('score', parseInt(score_max))
+  if (tag)               query = query.contains('tags', [tag])
   if (search) {
     query = query.or(
       `company_name.ilike.%${search}%,email.ilike.%${search}%,domain.ilike.%${search}%,first_name.ilike.%${search}%,last_name.ilike.%${search}%`
@@ -94,10 +87,18 @@ export async function GET(request: Request) {
   query = query.range(from, from + per_page - 1)
 
   const { data, error, count } = await query
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  if (error) {
+    console.error('[GET /api/leads] query error:', error.message, { list_id, campaign_id })
+    return NextResponse.json({ error: error.message }, { status: 500 })
+  }
+
+  // Eliminar el campo auxiliar _llm (lead_list_members) antes de devolver
+  const returnData = list_id
+    ? (data ?? []).map((row: Record<string, unknown>) => { delete row._llm; return row })
+    : (data ?? [])
 
   return NextResponse.json({
-    data: data ?? [],
+    data: returnData,
     total: count ?? 0,
     page,
     per_page,
