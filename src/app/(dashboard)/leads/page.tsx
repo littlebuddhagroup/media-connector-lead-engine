@@ -142,6 +142,7 @@ export default function LeadsPage() {
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [enrichJob, setEnrichJob] = useState<{ done: number; total: number; errors: number } | null>(null)
   const [deleting, setDeleting] = useState(false)
+  const [showSelectMenu, setShowSelectMenu] = useState(false)
 
   // Asignar a campaña
   const [showAssignModal, setShowAssignModal] = useState(false)
@@ -1000,20 +1001,6 @@ export default function LeadsPage() {
                   </button>
                 </div>
               </div>
-              {/* Banner seleccionar todas las páginas */}
-              {allSelected && !selectAllPages && total > perPage && (
-                <div className="flex items-center justify-center gap-3 px-4 py-2 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-800">
-                  <span>Has seleccionado los {leads.length} leads de esta página.</span>
-                  <button
-                    onClick={handleSelectAllPages}
-                    disabled={loadingSelectAll}
-                    className="font-semibold text-amber-700 underline hover:text-amber-900 flex items-center gap-1"
-                  >
-                    {loadingSelectAll ? <Loader2 className="w-3 h-3 animate-spin" /> : <CheckSquare className="w-3 h-3" />}
-                    Seleccionar todos los {total} leads
-                  </button>
-                </div>
-              )}
               {selectAllPages && (
                 <div className="flex items-center justify-center gap-3 px-4 py-2 bg-green-50 border border-green-200 rounded-xl text-xs text-green-800">
                   <CheckSquare className="w-3.5 h-3.5 text-green-600" />
@@ -1035,10 +1022,64 @@ export default function LeadsPage() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-gray-100 bg-gray-50/50">
-                    <th className="px-2 md:px-3 py-3 w-8">
-                      <button onClick={toggleAll} className="text-gray-400 hover:text-brand-600 transition-colors">
-                        {allSelected ? <CheckSquare className="w-4 h-4 text-brand-600" /> : <Square className="w-4 h-4" />}
-                      </button>
+                    <th className="px-2 md:px-3 py-3 w-10 relative">
+                      <div className="flex items-center gap-0.5">
+                        <button onClick={toggleAll} className="transition-colors" style={{ color: allSelected ? '#D80003' : 'var(--text-dim, #9ca3af)' }}>
+                          {allSelected
+                            ? <CheckSquare className="w-4 h-4" style={{ color: '#D80003' }} />
+                            : someSelected
+                            ? <div style={{ width: '16px', height: '16px', border: '2px solid #9ca3af', borderRadius: '3px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                <div style={{ width: '8px', height: '2px', background: '#9ca3af', borderRadius: '1px' }} />
+                              </div>
+                            : <Square className="w-4 h-4" />
+                          }
+                        </button>
+                        <button
+                          onClick={() => setShowSelectMenu(m => !m)}
+                          className="text-gray-300 hover:text-gray-500 transition-colors"
+                          style={{ padding: '1px' }}
+                          title="Opciones de selección"
+                        >
+                          <ChevronDown className="w-3 h-3" />
+                        </button>
+                      </div>
+                      {showSelectMenu && (
+                        <>
+                          <div className="fixed inset-0 z-40" onClick={() => setShowSelectMenu(false)} />
+                          <div className="absolute top-full left-0 z-50 bg-white border border-gray-200 rounded-xl shadow-xl py-1 min-w-[220px] mt-1" style={{ boxShadow: '0 8px 32px rgba(0,0,0,0.12)' }}>
+                            <button
+                              onClick={() => { setSelected(new Set(leads.map(l => l.id))); setSelectAllPages(false); setShowSelectMenu(false) }}
+                              className="w-full text-left px-3 py-2 text-xs hover:bg-gray-50 flex items-center gap-2 transition-colors"
+                            >
+                              <Square className="w-3.5 h-3.5 text-gray-400 shrink-0" />
+                              <span>Esta página <span className="text-gray-400 ml-1">({leads.length})</span></span>
+                            </button>
+                            <button
+                              onClick={() => { handleSelectAllPages(); setShowSelectMenu(false) }}
+                              disabled={loadingSelectAll}
+                              className="w-full text-left px-3 py-2 text-xs hover:bg-gray-50 flex items-center gap-2 transition-colors disabled:opacity-50"
+                            >
+                              {loadingSelectAll
+                                ? <Loader2 className="w-3.5 h-3.5 shrink-0 animate-spin" style={{ color: '#D80003' }} />
+                                : <CheckSquare className="w-3.5 h-3.5 shrink-0" style={{ color: '#D80003' }} />
+                              }
+                              <span className="font-semibold">Seleccionar todo <span className="font-normal text-gray-400 ml-1">({total})</span></span>
+                            </button>
+                            {someSelected && (
+                              <>
+                                <div className="border-t border-gray-100 my-1" />
+                                <button
+                                  onClick={() => { setSelected(new Set()); setSelectAllPages(false); setShowSelectMenu(false) }}
+                                  className="w-full text-left px-3 py-2 text-xs hover:bg-gray-50 flex items-center gap-2 text-gray-400 hover:text-gray-600 transition-colors"
+                                >
+                                  <X className="w-3.5 h-3.5 shrink-0" />
+                                  Deseleccionar todo
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        </>
+                      )}
                     </th>
                     {thSort('Empresa', 'company_name')}
                     {/* Columnas solo visibles en md+ */}
