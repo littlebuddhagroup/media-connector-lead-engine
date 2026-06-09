@@ -305,6 +305,18 @@ export default function LeadsPage() {
     })
   }
 
+  const toggleGroup = (groupLeads: Lead[]) => {
+    const ids = groupLeads.map(l => l.id)
+    const allGroupSelected = ids.every(id => selected.has(id))
+    setSelectAllPages(false)
+    setSelected(prev => {
+      const next = new Set(prev)
+      if (allGroupSelected) ids.forEach(id => next.delete(id))
+      else ids.forEach(id => next.add(id))
+      return next
+    })
+  }
+
   // Seleccionar TODOS los leads que coinciden con los filtros actuales (todas las páginas)
   const handleSelectAllPages = async () => {
     setLoadingSelectAll(true)
@@ -1203,7 +1215,26 @@ export default function LeadsPage() {
                           <tr key={`group-${groupKey}`}
                             className="bg-gray-50/80 hover:bg-brand-50/30 cursor-pointer border-b border-gray-100 transition-colors"
                             onClick={toggle}>
-                            <td className="px-3 py-3" colSpan={2}>
+                            <td className="px-3 py-3 w-10" onClick={e => e.stopPropagation()}>
+                              {(() => {
+                                const ids = groupLeads.map(l => l.id)
+                                const allSel = ids.every(id => selected.has(id))
+                                const someSel = ids.some(id => selected.has(id))
+                                return (
+                                  <button onClick={() => toggleGroup(groupLeads)} className="transition-colors" style={{ color: allSel ? '#D80003' : 'var(--text-dim, #9ca3af)' }}>
+                                    {allSel
+                                      ? <CheckSquare className="w-4 h-4" style={{ color: '#D80003' }} />
+                                      : someSel
+                                      ? <div style={{ width: '16px', height: '16px', border: '2px solid #9ca3af', borderRadius: '3px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                          <div style={{ width: '8px', height: '2px', background: '#9ca3af', borderRadius: '1px' }} />
+                                        </div>
+                                      : <Square className="w-4 h-4" />
+                                    }
+                                  </button>
+                                )
+                              })()}
+                            </td>
+                            <td className="px-3 py-3">
                               <div className="flex items-center gap-2">
                                 <span className="text-gray-400">
                                   {isExpanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRightIcon className="w-3.5 h-3.5" />}
