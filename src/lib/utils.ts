@@ -145,7 +145,7 @@ export function textToHtml(text: string): string {
   return text
     .split(/\n\n+/)
     .filter(p => p.trim())
-    .map(p => `<p style="margin:0 0 14px 0">${p.trim().replace(/\n/g, '<br>')}</p>`)
+    .map(p => `<p>${p.trim().replace(/\n/g, '<br>')}</p>`)
     .join('\n')
 }
 

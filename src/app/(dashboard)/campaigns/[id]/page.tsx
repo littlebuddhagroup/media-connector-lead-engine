@@ -1842,7 +1842,7 @@ ${noActivity.map(r => personRow(r, '#fff')).join('')}
                                             />
                                           ) : (
                                             <div
-                                              className="border border-gray-200 rounded-xl p-4 bg-white text-sm text-gray-800 leading-relaxed min-h-[120px]"
+                                              className="prose prose-sm max-w-none border border-gray-200 rounded-xl p-4 bg-white leading-relaxed min-h-[120px]"
                                               style={{ fontFamily: 'sans-serif' }}
                                               dangerouslySetInnerHTML={{ __html: currentBody || '<p class="text-gray-400 text-xs italic">Sin contenido</p>' }}
                                             />
@@ -2752,7 +2752,7 @@ ${noActivity.map(r => personRow(r, '#fff')).join('')}
                             />
                           ) : (
                             <div
-                              className="border border-gray-200 rounded-xl p-4 bg-white text-sm text-gray-800 leading-relaxed min-h-[160px] overflow-auto"
+                              className="prose prose-sm max-w-none border border-gray-200 rounded-xl p-4 bg-white leading-relaxed min-h-[160px] overflow-auto"
                               style={{ fontFamily: 'sans-serif' }}
                               dangerouslySetInnerHTML={{ __html: step.body || '<p style="color:#9ca3af;font-size:12px;font-style:italic">Sin contenido</p>' }}
                             />
