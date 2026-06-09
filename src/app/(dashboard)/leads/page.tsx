@@ -308,7 +308,7 @@ export default function LeadsPage() {
   // Seleccionar TODOS los leads que coinciden con los filtros actuales (todas las páginas)
   const handleSelectAllPages = async () => {
     setLoadingSelectAll(true)
-    const params = new URLSearchParams({ per_page: '99999', page: '1', sort_by: sortBy, sort_order: sortDir })
+    const params = new URLSearchParams({ sort_by: sortBy, sort_order: sortDir })
     if (search)       params.set('search', search)
     if (status)       params.set('status', status)
     if (priority)     params.set('priority', priority)
@@ -317,9 +317,9 @@ export default function LeadsPage() {
     if (sector)       params.set('sector', sector)
     if (country)      params.set('country', country)
     if (activeListId) params.set('list_id', activeListId)
-    const res = await fetch(`/api/leads?${params}`)
+    const res = await fetch(`/api/leads/ids?${params}`)
     const json = await res.json()
-    setSelected(new Set((json.data ?? []).map((l: Lead) => l.id)))
+    setSelected(new Set(json.ids ?? []))
     setSelectAllPages(true)
     setLoadingSelectAll(false)
   }
