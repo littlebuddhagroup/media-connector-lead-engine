@@ -4,8 +4,10 @@ import { extractDomain } from '@/lib/utils'
 
 const REQUIRED_FIELDS = ['company_name']
 const ALLOWED_FIELDS = [
-  'company_name', 'website', 'domain', 'email', 'phone',
+  'company_name', 'first_name', 'last_name', 'job_title', 'department',
+  'website', 'domain', 'email', 'phone',
   'country', 'city', 'sector', 'description', 'linkedin_url',
+  'priority', 'status',
 ]
 
 export async function POST(request: Request) {
@@ -35,18 +37,19 @@ export async function POST(request: Request) {
 
   const errors: Array<{ row: number; message: string }> = []
   const leadsToInsert: Record<string, unknown>[] = []
-  const existingDomains = new Set<string>()
-  const existingEmails = new Set<string>()
+  const existingDomains = new Map<string, string>() // domain → lead_id
+  const existingEmails = new Map<string, string>()  // email  → lead_id
+  const duplicateLeadIds = new Set<string>()        // leads ya existentes a vincular a la campaña
 
   // Obtener emails y dominios existentes para detectar duplicados
   const { data: existingLeads } = await supabase
     .from('leads')
-    .select('domain, email')
+    .select('id, domain, email')
     .eq('user_id', user.id)
 
   existingLeads?.forEach(l => {
-    if (l.domain) existingDomains.add(l.domain.toLowerCase())
-    if (l.email) existingEmails.add(l.email.toLowerCase())
+    if (l.domain) existingDomains.set(l.domain.toLowerCase(), l.id)
+    if (l.email)  existingEmails.set(l.email.toLowerCase(), l.id)
   })
 
   // Procesar filas
@@ -76,19 +79,18 @@ export async function POST(request: Request) {
 
     // Detectar duplicados (dentro del mismo import también)
     const domain = (lead.domain as string)?.toLowerCase()
-    const email = (lead.email as string)?.toLowerCase()
+    const email  = (lead.email  as string)?.toLowerCase()
 
-    if (domain && existingDomains.has(domain)) {
-      errors.push({ row: index + 1, message: `Duplicado: dominio ${domain} ya existe` })
+    const dupId = (domain && existingDomains.get(domain)) || (email && existingEmails.get(email))
+    if (dupId) {
+      errors.push({ row: index + 1, message: `Duplicado: ya existe (${domain || email})` })
+      // Si hay campaña, marcarlo para vincularlo igualmente
+      if (campaign_id) duplicateLeadIds.add(dupId)
       return
     }
-    if (email && existingEmails.has(email)) {
-      errors.push({ row: index + 1, message: `Duplicado: email ${email} ya existe` })
-      return
-    }
 
-    if (domain) existingDomains.add(domain)
-    if (email) existingEmails.add(email)
+    if (domain) existingDomains.set(domain, 'pending')
+    if (email)  existingEmails.set(email, 'pending')
 
     leadsToInsert.push(lead)
   })
@@ -116,16 +118,22 @@ export async function POST(request: Request) {
       )
   }
 
-  // Asignar a campaign_leads (junction) si se especificó campaign_id
-  // Esto garantiza que los leads importados aparezcan igual que los asignados via UI
-  if (campaign_id && insertedLeadIds.length > 0) {
+  // Asignar a campaign_leads todos los leads relacionados con esta campaña:
+  // 1. Los recién insertados  2. Los duplicados que ya existían
+  if (campaign_id) {
     const adminClient = createAdminClient()
-    await adminClient
-      .from('campaign_leads')
-      .upsert(
-        insertedLeadIds.map(lid => ({ campaign_id, lead_id: lid, user_id: user.id })),
-        { onConflict: 'campaign_id,lead_id', ignoreDuplicates: true }
-      )
+    const allCampLeadIds = [
+      ...insertedLeadIds,
+      ...Array.from(duplicateLeadIds),
+    ]
+    if (allCampLeadIds.length > 0) {
+      await adminClient
+        .from('campaign_leads')
+        .upsert(
+          allCampLeadIds.map(lid => ({ campaign_id, lead_id: lid, user_id: user.id })),
+          { onConflict: 'campaign_id,lead_id', ignoreDuplicates: true }
+        )
+    }
   }
 
   // Actualizar registro de importación
@@ -136,17 +144,9 @@ export async function POST(request: Request) {
       skipped_rows: errors.length,
       error_rows: errors.length,
       status: 'completed',
-      errors: errors.slice(0, 100), // Guardar máx 100 errores
+      errors: errors.slice(0, 100),
     })
     .eq('id', importRecord?.id)
-
-  // Actualizar contador de campaña
-  if (campaign_id && imported > 0) {
-    await supabase
-      .from('campaigns')
-      .update({ total_leads: supabase.rpc('increment', { x: imported }) as unknown as number })
-      .eq('id', campaign_id)
-  }
 
   return NextResponse.json({
     data: {
