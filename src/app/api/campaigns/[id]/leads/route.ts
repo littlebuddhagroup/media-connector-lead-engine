@@ -129,12 +129,25 @@ export async function DELETE(request: Request, { params }: Params) {
     return NextResponse.json({ error: 'lead_ids array requerido' }, { status: 400 })
   }
 
-  const { error } = await admin
+  // Quitar de junction table
+  const { error: junctionError } = await admin
     .from('campaign_leads')
     .delete()
     .eq('campaign_id', id)
     .in('lead_id', lead_ids)
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  if (junctionError) return NextResponse.json({ error: junctionError.message }, { status: 500 })
+
+  // También resetear campaign_id directo en los leads (en lotes de 500)
+  const CHUNK = 500
+  for (let i = 0; i < lead_ids.length; i += CHUNK) {
+    const chunk = lead_ids.slice(i, i + CHUNK)
+    await admin
+      .from('leads')
+      .update({ campaign_id: null })
+      .eq('campaign_id', id)
+      .in('id', chunk)
+  }
+
   return NextResponse.json({ data: { removed: lead_ids.length } })
 }

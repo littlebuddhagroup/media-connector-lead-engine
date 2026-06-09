@@ -185,6 +185,7 @@ export default function CampaignDetailPage() {
   const [selectAllCampLeads, setSelectAllCampLeads] = useState(false)
   const [loadingSelectAllCamp, setLoadingSelectAllCamp] = useState(false)
   const [showCampSelectMenu, setShowCampSelectMenu] = useState(false)
+  const [deletingCampLeads, setDeletingCampLeads] = useState(false)
 
   // Plantilla
   const [editingTemplate, setEditingTemplate] = useState<Template | null>(null)
@@ -603,6 +604,32 @@ export default function CampaignDetailPage() {
     setSelectedToRemove(new Set(json.ids ?? []))
     setSelectAllCampLeads(true)
     setLoadingSelectAllCamp(false)
+  }
+
+  const handleDeleteCampLeads = async () => {
+    const count = selectedToRemove.size
+    if (!confirm(`¿Eliminar definitivamente ${count} lead(s)? Esta acción no se puede deshacer.`)) return
+    setDeletingCampLeads(true)
+    const ids = Array.from(selectedToRemove)
+    const CHUNK = 500
+    let ok = true
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const res = await fetch('/api/leads/bulk-delete', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lead_ids: ids.slice(i, i + CHUNK) }),
+      })
+      if (!res.ok) { ok = false; break }
+    }
+    setDeletingCampLeads(false)
+    if (ok) {
+      setSelectedToRemove(new Set())
+      setSelectAllCampLeads(false)
+      fetchAll()
+      toast.success('Leads eliminados', `${count} leads eliminados definitivamente.`)
+    } else {
+      toast.error('Error', 'No se pudieron eliminar todos los leads.')
+    }
   }
 
   const handleRemoveLeads = async () => {
@@ -1323,16 +1350,26 @@ ${noActivity.map(r => personRow(r, '#fff')).join('')}
                       </p>
                     )}
                   </div>
-                  <div className="flex gap-2">
+                  <div className="flex gap-2 flex-wrap">
                     {selectedToRemove.size > 0 && (
-                      <button
-                        onClick={handleRemoveLeads}
-                        disabled={removing}
-                        className="text-xs px-3 py-1.5 rounded-lg border border-red-200 text-red-600 hover:bg-red-50 flex items-center gap-1.5"
-                      >
-                        {removing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
-                        Quitar de campaña ({selectedToRemove.size})
-                      </button>
+                      <>
+                        <button
+                          onClick={handleRemoveLeads}
+                          disabled={removing || deletingCampLeads}
+                          className="text-xs px-3 py-1.5 rounded-lg border border-orange-200 text-orange-600 hover:bg-orange-50 flex items-center gap-1.5 disabled:opacity-50"
+                        >
+                          {removing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <X className="w-3.5 h-3.5" />}
+                          Quitar de campaña ({selectedToRemove.size})
+                        </button>
+                        <button
+                          onClick={handleDeleteCampLeads}
+                          disabled={removing || deletingCampLeads}
+                          className="text-xs px-3 py-1.5 rounded-lg border border-red-200 text-red-600 hover:bg-red-50 flex items-center gap-1.5 disabled:opacity-50"
+                        >
+                          {deletingCampLeads ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                          Eliminar leads ({selectedToRemove.size})
+                        </button>
+                      </>
                     )}
                     <button onClick={() => setShowAssignModal(true)} className="btn-primary text-xs py-1.5">
                       <Plus className="w-3.5 h-3.5" /> Añadir leads existentes
