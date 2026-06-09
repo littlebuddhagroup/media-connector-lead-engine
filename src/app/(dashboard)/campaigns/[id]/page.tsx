@@ -141,6 +141,13 @@ function FunnelStep({ label, count, total, color }: {
   )
 }
 
+// Detecta si las secuencias son de 3 o 5 pasos mirando el step_number máximo
+function detectSeqStepCount(seqs: { sequence_steps?: { step_number: number }[] }[]): 3 | 5 {
+  const max = seqs.reduce((m, seq) =>
+    Math.max(m, ...(seq.sequence_steps ?? []).map(s => s.step_number), 0), 0)
+  return max >= 4 ? 5 : 3
+}
+
 // ─── Página principal ─────────────────────────────────────────
 export default function CampaignDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -266,8 +273,8 @@ export default function CampaignDetailPage() {
     }
   }
 
-  // Reprogramación masiva de secuencias (3 inputs independientes)
-  const [bulkDates, setBulkDates] = useState<[string, string, string]>(['', '', ''])
+  // Reprogramación masiva de secuencias (3 o 5 pasos según las secuencias existentes)
+  const [bulkDates, setBulkDates] = useState<string[]>(['', '', ''])
   const [applyingBulk, setApplyingBulk] = useState(false)
   const [deletingAllSeqs, setDeletingAllSeqs] = useState(false)
 
@@ -464,10 +471,10 @@ export default function CampaignDetailPage() {
       })
     ))
     setApplyingBulk(false)
-    setBulkDates(['', '', ''])
     const seqRes = await fetch(`/api/sequences?campaign_id=${id}`)
     const seqJson = await seqRes.json()
     setSequences(seqJson.data ?? [])
+    setBulkDates(Array(detectSeqStepCount(seqJson.data ?? [])).fill(''))
     toast.success('Fechas actualizadas', `${stepsToUpdate.length} pasos reprogramados.`)
   }
 
@@ -548,6 +555,15 @@ export default function CampaignDetailPage() {
   }, [id])
 
   useEffect(() => { fetchAll() }, [fetchAll])
+
+  // Sincronizar tamaño de bulkDates con el nº real de pasos de las secuencias
+  useEffect(() => {
+    const count = detectSeqStepCount(sequences as { sequence_steps?: { step_number: number }[] }[])
+    setBulkDates(prev => {
+      if (prev.length === count) return prev
+      return Array(count).fill('')
+    })
+  }, [sequences])
 
   useEffect(() => {
     if (campaign) setEditSettings({
@@ -1619,35 +1635,41 @@ ${noActivity.map(r => personRow(r, '#fff')).join('')}
                 )}
 
                 {/* Reprogramación masiva */}
-                {sequences.length > 0 && (
-                  <div className="p-3 bg-gray-50 border border-gray-200 rounded-xl space-y-2">
-                    <p className="text-xs font-semibold text-gray-600 flex items-center gap-1.5">
-                      <CalendarClock className="w-3.5 h-3.5" /> Reprogramar todas las secuencias
-                    </p>
-                    <div className="grid grid-cols-3 gap-2">
-                      {(['Email inicial', 'Follow-up (+5d)', 'Último intento (+10d)'] as const).map((label, i) => (
-                        <div key={i}>
-                          <p className="text-xs text-gray-500 mb-1">{label}</p>
-                          <input
-                            type="datetime-local"
-                            className="input text-xs py-1"
-                            value={bulkDates[i]}
-                            onChange={e => setBulkDates(prev => { const n = [...prev] as [string,string,string]; n[i] = e.target.value; return n })}
-                          />
-                        </div>
-                      ))}
+                {sequences.length > 0 && (() => {
+                  const stepCount = detectSeqStepCount(sequences as { sequence_steps?: { step_number: number }[] }[])
+                  const labels3 = ['Email inicial', 'Follow-up (+5d)', 'Último intento (+10d)']
+                  const labels5 = ['Email 1', 'Follow-up (+4d)', 'Seguimiento (+8d)', 'Reactivación (+13d)', 'Cierre (+18d)']
+                  const labels = stepCount === 5 ? labels5 : labels3
+                  return (
+                    <div className="p-3 bg-gray-50 border border-gray-200 rounded-xl space-y-2">
+                      <p className="text-xs font-semibold text-gray-600 flex items-center gap-1.5">
+                        <CalendarClock className="w-3.5 h-3.5" /> Reprogramar todas las secuencias ({stepCount} toques)
+                      </p>
+                      <div className={`grid gap-2 ${stepCount === 5 ? 'grid-cols-5' : 'grid-cols-3'}`}>
+                        {labels.map((label, i) => (
+                          <div key={i}>
+                            <p className="text-xs text-gray-500 mb-1">{label}</p>
+                            <input
+                              type="datetime-local"
+                              className="input text-xs py-1"
+                              value={bulkDates[i] ?? ''}
+                              onChange={e => setBulkDates(prev => { const n = [...prev]; n[i] = e.target.value; return n })}
+                            />
+                          </div>
+                        ))}
+                      </div>
+                      <div className="flex justify-end">
+                        <button
+                          onClick={handleApplyBulkDates}
+                          disabled={applyingBulk || bulkDates.every(d => !d)}
+                          className="btn-primary text-xs"
+                        >
+                          {applyingBulk ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Aplicando...</> : <><CalendarClock className="w-3.5 h-3.5" /> Aplicar a todas</>}
+                        </button>
+                      </div>
                     </div>
-                    <div className="flex justify-end">
-                      <button
-                        onClick={handleApplyBulkDates}
-                        disabled={applyingBulk || bulkDates.every(d => !d)}
-                        className="btn-primary text-xs"
-                      >
-                        {applyingBulk ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Aplicando...</> : <><CalendarClock className="w-3.5 h-3.5" /> Aplicar a todas</>}
-                      </button>
-                    </div>
-                  </div>
-                )}
+                  )
+                })()}
 
                 {sequences.length === 0 ? (
                   <div className="py-10 text-center">
